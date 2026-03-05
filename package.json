@@ -1,0 +1,23 @@
+{
+	"name": "cli",
+	"module": "index.tsx",
+	"type": "module",
+	"private": true,
+	"scripts": {
+		"dev": "bun run src/main.tsx",
+		"format": "bunx --bun @biomejs/biome check --write ."
+	},
+	"devDependencies": {
+		"@biomejs/biome": "2.4.5",
+		"@types/bun": "latest",
+		"@types/react": "^19.2.14"
+	},
+	"peerDependencies": {
+		"typescript": "^5"
+	},
+	"dependencies": {
+		"commander": "^14.0.3",
+		"ink": "^6.8.0",
+		"react": "^19.2.4"
+	}
+}
