@@ -2,7 +2,6 @@
 	"name": "cli",
 	"module": "index.tsx",
 	"type": "module",
-	"private": true,
 	"scripts": {
 		"dev": "bun run src/main.tsx",
 		"format": "bunx --bun @biomejs/biome check --write .",
