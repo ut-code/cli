@@ -1,4 +1,4 @@
 # cli
 ```sh
-bun install -g github:ut-code/cli#main
+bun install -g github:ut-code/cli#HEAD
 ```
