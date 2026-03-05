@@ -1,5 +1,5 @@
 {
-	"name": "cli",
+	"name": "@ut-code/cli",
 	"module": "index.tsx",
 	"type": "module",
 	"scripts": {
