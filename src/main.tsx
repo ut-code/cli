@@ -1,9 +1,9 @@
 import { program } from "commander";
 import { render } from "ink";
-import { Logo } from "./ui/components/Logo";
+import { Greeting } from "./ui/components/Greeting";
 
 program.action(() => {
-	render(<Logo />);
+	render(<Greeting />);
 });
 
 program.parse();
