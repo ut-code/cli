@@ -1,18 +1,10 @@
-import { Text } from "ink";
-import { useEffect, useState } from "react";
+import BigText from "ink-big-text";
 
-export const Counter = () => {
-	const [counter, setCounter] = useState(0);
-
-	useEffect(() => {
-		const timer = setInterval(() => {
-			setCounter((previousCounter) => previousCounter + 1);
-		}, 100);
-
-		return () => {
-			clearInterval(timer);
-		};
-	}, []);
-
-	return <Text color="green">{counter} tests passed</Text>;
+export const Logo = () => {
+	return (
+		<>
+			<BigText text="We're"></BigText>
+			<BigText text="ut.code();"></BigText>
+		</>
+	);
 };
