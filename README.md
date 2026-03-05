@@ -1,4 +1,4 @@
-# cli
+# ut.code(); CLI 
 ```sh
-bun install -g github:ut-code/cli#HEAD
+cargo install --git https://github.com/ut-code/cli
 ```
