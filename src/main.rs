@@ -9,5 +9,5 @@ struct Cli {}
 
 fn main() {
     let _cli = Cli::parse();
-    ui::run();
+    ui::run().unwrap();
 }

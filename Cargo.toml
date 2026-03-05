@@ -10,3 +10,5 @@ path = "src/main.rs"
 [dependencies]
 clap = { version = "4", features = ["derive"] }
 cfonts = "1"
+ratatui = "0.29"
+crossterm = "0.28"
