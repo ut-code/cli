@@ -5,7 +5,7 @@
 	"scripts": {
 		"dev": "bun run src/main.tsx",
 		"format": "bunx --bun @biomejs/biome check --write .",
-		"build": "bun build src/main.tsx --outdir dist --target node --packages external"
+		"build": "bun build src/main.tsx --outdir dist --target node --packages external && echo '#!/usr/bin/env node' | cat - dist/main.js > dist/main.js.tmp && mv dist/main.js.tmp dist/main.js"
 	},
 	"devDependencies": {
 		"@biomejs/biome": "2.4.5",

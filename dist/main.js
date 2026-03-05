@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 // src/main.tsx
 import { program } from "commander";
 import { render } from "ink";
