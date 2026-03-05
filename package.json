@@ -5,7 +5,8 @@
 	"private": true,
 	"scripts": {
 		"dev": "bun run src/main.tsx",
-		"format": "bunx --bun @biomejs/biome check --write ."
+		"format": "bunx --bun @biomejs/biome check --write .",
+		"build": "bun build src/main.tsx --outdir dist --target node --packages external"
 	},
 	"devDependencies": {
 		"@biomejs/biome": "2.4.5",
