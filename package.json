@@ -1,6 +1,6 @@
 {
-	"name": "@ut-code/cli",
-	"module": "index.tsx",
+	"name": "utcode-cli",
+  "version": "0.1.0",
 	"type": "module",
 	"scripts": {
 		"dev": "bun run src/main.tsx",
