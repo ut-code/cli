@@ -1,40 +1,40 @@
 #!/usr/bin/env node
 // src/main.tsx
 import { program } from "commander";
-// src/ui/components/Logo.tsx
-import { render, Text } from "ink";
-import { useEffect, useState } from "react";
-import { jsxDEV } from "react/jsx-dev-runtime";
+import { render } from "ink";
 
-var Counter = () => {
-	const [counter, setCounter] = useState(0);
-	useEffect(() => {
-		const timer = setInterval(() => {
-			setCounter((previousCounter) => previousCounter + 1);
-		}, 100);
-		return () => {
-			clearInterval(timer);
-		};
-	}, []);
-	return /* @__PURE__ */ jsxDEV(
-		Text,
-		{
-			color: "green",
-			children: [counter, " tests passed"],
-		},
-		undefined,
-		true,
-		undefined,
-		this,
-	);
+// src/ui/components/Greeting.tsx
+import { Box } from "ink";
+import BigText from "ink-big-text";
+import { jsxDEV, Fragment } from "react/jsx-dev-runtime";
+var Greeting = () => {
+  return /* @__PURE__ */ jsxDEV(Fragment, {
+    children: [
+      /* @__PURE__ */ jsxDEV(BigText, {
+        text: "We're",
+        colors: ["#ffffff", "#00ff87"]
+      }, undefined, false, undefined, this),
+      /* @__PURE__ */ jsxDEV(Box, {
+        children: [
+          /* @__PURE__ */ jsxDEV(BigText, {
+            text: "ut."
+          }, undefined, false, undefined, this),
+          /* @__PURE__ */ jsxDEV(BigText, {
+            text: "code",
+            colors: ["green"]
+          }, undefined, false, undefined, this),
+          /* @__PURE__ */ jsxDEV(BigText, {
+            text: "();"
+          }, undefined, false, undefined, this)
+        ]
+      }, undefined, true, undefined, this)
+    ]
+  }, undefined, true, undefined, this);
 };
 
 // src/main.tsx
 import { jsxDEV as jsxDEV2 } from "react/jsx-dev-runtime";
-
 program.action(() => {
-	render(
-		/* @__PURE__ */ jsxDEV2(Counter, {}, undefined, false, undefined, this),
-	);
+  render(/* @__PURE__ */ jsxDEV2(Greeting, {}, undefined, false, undefined, this));
 });
 program.parse();
