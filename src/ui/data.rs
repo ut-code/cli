@@ -86,7 +86,7 @@ pub const PROJECTS: &[ContentEntry] = &[
 
 pub const MEMBERS: &[ContentEntry] = &[
     ContentEntry {
-        name: "nakomochi 👑",
+        name: "nakomochi",
         detail: "Current (5th) representative of ut.code();. Leader of the shortcut-game project and active in web app and CLI tooling across Svelte, TypeScript, and Rust.",
     },
     ContentEntry {
