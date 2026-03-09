@@ -8,96 +8,186 @@ pub const CATEGORIES: &[&str] = &["About", "Projects", "Articles", "Members"];
 pub const PROJECTS: &[ContentEntry] = &[
     ContentEntry {
         name: "shortcut-game",
-        detail: "A keyboard shortcut learning game built with SvelteKit. \
-                 Players practice common editor and OS shortcuts in an \
-                 interactive format, available at shortcut-game.utcode.net.",
+        detail: "A game for learning keyboard shortcuts, targeting users who want to improve their speed and efficiency in editors/OS. Built with SvelteKit.",
     },
     ContentEntry {
         name: "my-code",
-        detail: "An AI-powered interactive web learning platform for \
-                 programming, live at my-code.utcode.net. Features in-browser \
-                 REPLs, code editors, and an AI chat assistant via Gemini.",
+        detail: "An interactive learning platform for programming, aimed at beginners. Features in-browser code execution and AI chat to help students learn. Built with TypeScript and AI services.",
     },
     ContentEntry {
         name: "cli",
-        detail: "A command-line interface tool for the ut.code(); community. \
-                 Provides quick access to member info, projects, and community \
-                 resources directly from the terminal.",
+        detail: "A terminal-based CLI made for ut.code(); members to browse info and resources conveniently. Implemented in Rust using ratatui.",
     },
     ContentEntry {
         name: "syllabus",
-        detail: "A course registration support system nicknamed Shiraku Bus. \
-                 Helps University of Tokyo students navigate course enrollment \
-                 with TypeScript-based tooling and scraped course data.",
+        detail: "A web app to help university students navigate course registration and class planning. Uses TypeScript and web data scraping for accurate info.",
     },
     ContentEntry {
         name: "space-simulator",
-        detail: "An early-stage space simulator web app built with React, \
-                 TypeScript, and Vite. Simulates orbital mechanics and \
-                 space environments, hosted at space-simulator.utcode.net.",
+        detail: "An educational web app simulating orbital mechanics and space environments for students interested in physics/space. Implemented with React, TypeScript, and Vite.",
     },
     ContentEntry {
         name: "CourseMate",
-        detail: "A course management and peer-matching platform built by \
-                 ut.code(); members. Helps students find study partners and \
-                 organize collaborative learning sessions.",
+        detail: "A web app for students to discover and connect with classmates taking the same university courses. Built with TypeScript and web technologies.",
     },
     ContentEntry {
         name: "create-cpu",
-        detail: "A browser-based interactive CPU and circuit simulator. \
-                 Users build circuits from logic gates, connect pins and wires, \
-                 and compose arbitrary logic to understand computer architecture.",
+        detail: "A browser-based circuit/CPU simulator aimed at students learning computer architecture. Lets users create logic circuits by connecting gates and wires. Built with TypeScript for the web.",
+    },
+    ContentEntry {
+        name: "dot-turor",
+        detail: "A planned app to help new developers set up their dotfiles and dev environments with best practices. Target: beginner programmers. Tech: To be decided.",
+    },
+    ContentEntry {
+        name: "menu",
+        detail: "A meal proposal app that suggests menus based on user answers to a series of questions. Developed in Jupyter Notebook and Python.",
+    },
+    ContentEntry {
+        name: "rollcron",
+        detail: "A cron job scheduler designed for automated, version-controlled workflows, synchronizing job definitions from git repositories. Implemented in Rust.",
+    },
+    ContentEntry {
+        name: "memomap",
+        detail: "A spatial note-taking app for leaving geo-tagged memos on a map. Built as a mobile-first application with Flutter (Dart).",
+    },
+    ContentEntry {
+        name: "discord-bots",
+        detail: "A set of Discord bots enabling automation, moderation, and notifications in the ut.code(); community server. Implemented in TypeScript.",
+    },
+    ContentEntry {
+        name: "komabanavi",
+        detail: "A web map app for campus navigation. Designed for students and visitors to find buildings and facilities at Komaba campus. Built with TypeScript.",
+    },
+    ContentEntry {
+        name: "hitori-mahjong",
+        detail: "A solo play mahjong app aimed at practicing tile recognition and scoring. Built as a web app using TypeScript.",
+    },
+    ContentEntry {
+        name: "itsuhima",
+        detail: "A web app for easily coordinating shared availability for small groups and events. Targeted at university students. Written in TypeScript.",
+    },
+    ContentEntry {
+        name: "extralearn",
+        detail: "The next step after ut.code(); Learn: an extended learning platform with advanced MDX-based content, especially for those wanting to deepen their programming knowledge. Uses React/TypeScript/MDX.",
+    },
+    ContentEntry {
+        name: "Raxcel",
+        detail: "A desktop spreadsheet app for users seeking a lightweight, Excel-style experience on their desktop. Built with Svelte and desktop frameworks.",
+    },
+    ContentEntry {
+        name: "card-game",
+        detail: "A web-based card game platform for experimenting with turn-based mechanics and multiplayer support. Built with TypeScript for the web.",
+    },
+    ContentEntry {
+        name: "ut-bridge",
+        detail: "A TypeScript app designed to help connect students across university departments and interests. Was used for peer introduction and collaboration. Currently suspended.",
     },
 ];
 
 pub const MEMBERS: &[ContentEntry] = &[
     ContentEntry {
-        name: "nakomochi",
-        detail: "Leader of the shortcut-game project and active ut.code(); \
-                 member. Works across Svelte, TypeScript, and Rust, with \
-                 interests spanning web apps and CLI tooling.",
+        name: "nakomochi 👑",
+        detail: "Current (5th) representative of ut.code();. Leader of the shortcut-game project and active in web app and CLI tooling across Svelte, TypeScript, and Rust.",
     },
     ContentEntry {
         name: "chvmvd",
-        detail: "A GitHub Pro contributor and key maintainer of ut.code(); \
-                 educational materials, including utcode-learn. Active in \
-                 algorithm education and open-source TypeScript projects.",
+        detail: "3rd representative of ut.code();. Key maintainer of educational materials (including utcode-learn), focused on algorithm education and open-source TypeScript projects.",
     },
     ContentEntry {
         name: "aster-void",
-        detail: "A core contributor focused on systems programming and \
-                 low-level tooling. Maintains several foundational libraries \
-                 used across ut.code(); projects.",
+        detail: "Maintainer of extralearn (extra.utcode.net). Focused on \
+                 systems programming and low-level tooling.",
     },
     ContentEntry {
         name: "na-trium-144",
-        detail: "Leader of the my-code project and prolific contributor \
-                 spanning TypeScript, C++, and systems tooling. Creator of \
-                 webcface (a web-based communication framework) and Nikochan.",
+        detail: "Leader of the my-code project. Prolific contributor spanning \
+                 TypeScript, C++, and systems tooling. Creator of webcface \
+                 (a web-based communication framework) and Nikochan.",
     },
     ContentEntry {
         name: "nakaterm",
-        detail: "A full-stack developer with a passion for terminal UIs and \
-                 developer experience. Author of multiple open-source CLI \
-                 utilities within the ut.code(); ecosystem.",
+        detail: "Interested in terminal UIs and developer experience. Author \
+                 of multiple open-source CLI utilities within the ut.code(); \
+                 ecosystem.",
     },
     ContentEntry {
         name: "Tsurubara-UTcode",
-        detail: "An ut.code(); member with experience in hackathon projects \
-                 and computer vision work. Contributed to team projects \
-                 including umaproject and coetecohack.",
+        detail: "Interested in computer vision and hackathon projects. \
+                 Contributed to team projects including umaproject and \
+                 coetecohack.",
     },
     ContentEntry {
         name: "tknkaa",
-        detail: "Builder of this CLI and active ut.code(); member. Interested \
-                 in Rust, TUI design, and making developer tools that are both \
-                 fast and pleasant to use.",
+        detail: "Builder of this CLI. Interested in Rust, TUI design, and \
+                 developer tooling. Maintains hitori-mahjong and Raxcel.",
     },
     ContentEntry {
         name: "chelproc",
-        detail: "An ut.code(); member and TypeScript developer. Contributed \
-                 to community tooling including setup scripts for ut.code(); \
-                 learning servers and various open-source projects.",
+        detail: "Founder and 1st representative of ut.code();. TypeScript developer, contributed setup scripts and infrastructure for community learning servers.",
+    },
+    ContentEntry {
+        name: "Tatsu723",
+        detail: "An ut.code(); member actively contributing to community \
+                 development projects.",
+    },
+    ContentEntry {
+        name: "faithia-anastasia",
+        detail: "An ut.code(); member diving into the community and its \
+                 projects.",
+    },
+    ContentEntry {
+        name: "shirokuma222",
+        detail: "An ut.code(); member contributing to community projects \
+                 and development initiatives.",
+    },
+    ContentEntry {
+        name: "RRRyoma",
+        detail: "An ut.code(); member contributing to community projects \
+                 and development initiatives.",
+    },
+    ContentEntry {
+        name: "Yokomi422",
+        detail: "An ut.code(); member engaged in community projects and \
+                 collaborative development.",
+    },
+    ContentEntry {
+        name: "tsatohiro",
+        detail: "An ut.code(); member contributing to community projects \
+                 and development initiatives.",
+    },
+    ContentEntry {
+        name: "SotaTamura",
+        detail: "An ut.code(); member contributing to the community's \
+                 growing portfolio of projects.",
+    },
+    ContentEntry {
+        name: "Rn86222",
+        detail: "An ut.code(); member bringing research depth and academic \
+                 perspective to community projects.",
+    },
+    ContentEntry {
+        name: "taka231",
+        detail: "Interested in systems programming and compilers. Built an \
+                 HLS compiler, eBPF loader, WebAssembly JIT, Brainfuck JIT, \
+                 and a C compiler (recc), mostly in Rust.",
+    },
+    ContentEntry {
+        name: "KaichiManabe",
+        detail: "The 4th representative of ut.code();, taking office from \
+                 September 2025. Leads the community's direction and \
+                 coordinates projects and events.",
+    },
+    ContentEntry {
+        name: "brdgb",
+        detail: "Interested in bridging systems engineering and software \
+                 development. Contributes an interdisciplinary perspective \
+                 to ut.code(); projects.",
+    },
+    ContentEntry {
+        name: "claude",
+        detail: "An AI assistant by Anthropic and honorary member of the \
+                 ut.code(); community. Helps members with code, documentation, \
+                 and this very CLI.",
     },
 ];
 
