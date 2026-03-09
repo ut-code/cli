@@ -1,6 +1,7 @@
 # ut.code(); CLI
 
 A terminal UI for browsing the [ut.code();](https://utcode.net) community.
+![demo](docs/images/cli.png)
 
 ## Install
 
