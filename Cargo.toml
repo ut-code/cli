@@ -1,10 +1,10 @@
 [package]
-name = "utcode"
+name = "coding-human"
 version = "0.1.0"
 edition = "2021"
 
 [[bin]]
-name = "utcode"
+name = "coding-human"
 path = "src/main.rs"
 
 [dependencies]

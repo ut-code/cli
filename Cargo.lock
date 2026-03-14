@@ -204,6 +204,24 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3a822ea5bc7590f9d40f1ba12c0dc3c2760f3482c6984db1573ad11031420831"
 
 [[package]]
+name = "coding-human"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "cfonts",
+ "clap",
+ "crossterm",
+ "dotenvy",
+ "futures",
+ "indicatif",
+ "ratatui",
+ "reqwest",
+ "serde_json",
+ "tokio",
+ "tokio-tungstenite",
+]
+
+[[package]]
 name = "colorchoice"
 version = "1.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1814,24 +1832,6 @@ dependencies = [
  "idna",
  "percent-encoding",
  "serde",
-]
-
-[[package]]
-name = "utcode"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "cfonts",
- "clap",
- "crossterm",
- "dotenvy",
- "futures",
- "indicatif",
- "ratatui",
- "reqwest",
- "serde_json",
- "tokio",
- "tokio-tungstenite",
 ]
 
 [[package]]

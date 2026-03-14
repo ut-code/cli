@@ -4,9 +4,9 @@ mod ui;
 
 use clap::{Parser, Subcommand};
 
-/// ut.code() CLI
+/// Coding Human CLI
 #[derive(Parser)]
-#[command(name = "utcode", version)]
+#[command(name = "coding-human", version)]
 struct Cli {
     #[command(subcommand)]
     command: Option<Commands>,
