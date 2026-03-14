@@ -9,9 +9,8 @@ path = "src/main.rs"
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }
-cfonts = "1"
 ratatui = "0.29"
-crossterm = "0.28"
+crossterm = { version = "0.28", features = ["event-stream"] }
 tokio = { version = "1", features = ["full"] }
 tokio-tungstenite = "0.23"
 serde_json = "1"
@@ -20,3 +19,4 @@ futures = "0.3"
 indicatif = "0.17"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 anyhow = "1"
+serde = { version = "1", features = ["derive"] }
