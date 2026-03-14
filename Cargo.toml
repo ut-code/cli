@@ -12,3 +12,11 @@ clap = { version = "4", features = ["derive"] }
 cfonts = "1"
 ratatui = "0.29"
 crossterm = "0.28"
+tokio = { version = "1", features = ["full"] }
+tokio-tungstenite = "0.23"
+serde_json = "1"
+dotenvy = "0.15"
+futures = "0.3"
+indicatif = "0.17"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+anyhow = "1"

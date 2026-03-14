@@ -23,7 +23,7 @@ export class RoomSession extends DurableObject {
       // programmerからの回答をuserに転送
       const users = this.ctx.getWebSockets("user");
       if (message === "[DONE]") {
-        users[0]?.close();
+        users[0]?.send("[DONE]");
       } else {
         users[0]?.send(message);
       }
