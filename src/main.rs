@@ -1,6 +1,8 @@
 mod ask;
+mod join;
+mod queue_select_tui;
 mod respond;
-mod ui;
+mod util;
 
 use clap::{Parser, Subcommand};
 
@@ -16,7 +18,12 @@ struct Cli {
 enum Commands {
     /// Ask a question and get a response
     Ask,
-    /// Respond to user questions as a programmer
+    /// Join as a programmer to answer questions
+    Join {
+        /// Your name
+        name: String,
+    },
+    /// Respond to user questions as a programmer (legacy)
     Respond {
         /// The room ID to connect to
         roomid: String,
@@ -34,6 +41,12 @@ async fn main() {
                 std::process::exit(1);
             }
         }
+        Some(Commands::Join { name }) => {
+            if let Err(e) = join::run(name).await {
+                eprintln!("Error: {}", e);
+                std::process::exit(1);
+            }
+        }
         Some(Commands::Respond { roomid }) => {
             if let Err(e) = respond::run(roomid).await {
                 eprintln!("Error: {}", e);
@@ -41,7 +54,10 @@ async fn main() {
             }
         }
         None => {
-            ui::run().unwrap();
+            if let Err(e) = queue_select_tui::run().await {
+                eprintln!("Error: {}", e);
+                std::process::exit(1);
+            }
         }
     }
 }

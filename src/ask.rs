@@ -6,6 +6,8 @@ use reqwest::Client;
 use std::io::{self, Write};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 
+use crate::util::build_ws_url;
+
 pub async fn run() -> Result<()> {
     dotenvy::dotenv().ok();
     let server_url =
@@ -13,7 +15,11 @@ pub async fn run() -> Result<()> {
 
     // Step 1: POST /rooms to get a roomid
     let client = Client::new();
-    let room_response = client.post(format!("{}/rooms", server_url)).send().await?;
+    let room_response = client
+        .post(format!("{}/rooms", server_url))
+        .send()
+        .await?
+        .error_for_status()?;
     let room_data: serde_json::Value = room_response.json().await?;
     let room_id = room_data["roomId"]
         .as_str()
@@ -22,18 +28,7 @@ pub async fn run() -> Result<()> {
     println!("Room ID: {}", room_id);
 
     // Step 2: Connect to the room via WebSocket
-    let ws_scheme = if server_url.starts_with("https://") {
-        "wss"
-    } else {
-        "ws"
-    };
-    let server_host = server_url
-        .strip_prefix("https://")
-        .or_else(|| server_url.strip_prefix("http://"))
-        .unwrap_or(&server_url);
-
-    let ws_url = format!("{}://{}/rooms/{}/user", ws_scheme, server_host, room_id);
-
+    let ws_url = build_ws_url(&server_url, &format!("/rooms/{}/user", room_id));
     let (ws_stream, _) = connect_async(&ws_url).await?;
     let (mut write, mut read) = ws_stream.split();
 
@@ -53,12 +48,17 @@ pub async fn run() -> Result<()> {
             break;
         }
 
+        if question.is_empty() {
+            continue;
+        }
+
         // Send the question
         write.send(Message::text(question)).await?;
 
         // Show "thinking" spinner
         let spinner = ProgressBar::new_spinner();
         spinner.set_message("Thinking");
+        spinner.enable_steady_tick(std::time::Duration::from_millis(100));
 
         // Wait for response chunks until [DONE]
         let mut first_chunk = true;
@@ -70,7 +70,7 @@ pub async fn run() -> Result<()> {
                         first_chunk = false;
                     }
                     if msg == "[DONE]" {
-                        // Programmer finished — back to Question prompt
+                        println!();
                         break;
                     }
                     print!("{}", msg);
