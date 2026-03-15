@@ -1,4 +1,5 @@
 mod ask;
+mod protocol;
 mod serve;
 
 use clap::{Parser, Subcommand};

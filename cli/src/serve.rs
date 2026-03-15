@@ -5,6 +5,8 @@ use reqwest::Client;
 use tokio::io::AsyncBufReadExt;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 
+use crate::protocol::WsMessage;
+
 pub async fn run(label: String) -> Result<()> {
     dotenvy::dotenv().ok();
     let server_url =
@@ -69,7 +71,7 @@ pub async fn run(label: String) -> Result<()> {
                     let trimmed = line.trim_end_matches('\n');
                     if let Some(cmd) = trimmed.strip_prefix('$') {
                         let command = cmd.trim().to_string();
-                        let msg = serde_json::json!({"type": "cmd", "command": command}).to_string();
+                        let msg = serde_json::to_string(&WsMessage::Cmd { command })?;
                         write.send(Message::text(msg)).await?;
                     } else {
                         write.send(Message::text(trimmed)).await?;
@@ -78,12 +80,10 @@ pub async fn run(label: String) -> Result<()> {
                 ws_msg = read.next() => {
                     match ws_msg {
                         Some(Ok(Message::Text(msg))) => {
-                            if let Ok(json) = serde_json::from_str::<serde_json::Value>(&msg) {
-                                if json["type"].as_str() == Some("cmd_result") {
-                                    let command = json["command"].as_str().unwrap_or("");
-                                    let output = json["output"].as_str().unwrap_or("");
-                                    println!("\n[cmd result] $ {}\n{}", command, output);
-                                }
+                            if let Ok(WsMessage::CmdResult { command, output }) =
+                                serde_json::from_str::<WsMessage>(&msg)
+                            {
+                                println!("\n[cmd result] $ {}\n{}", command, output);
                             }
                         }
                         Some(Ok(Message::Close(_))) => {

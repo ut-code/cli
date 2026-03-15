@@ -6,6 +6,8 @@ use reqwest::Client;
 use std::io::{self, Write};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 
+use crate::protocol::WsMessage;
+
 pub async fn run(yes: bool) -> Result<()> {
     dotenvy::dotenv().ok();
     let server_url =
@@ -86,10 +88,9 @@ pub async fn run(yes: bool) -> Result<()> {
                         println!();
                         break;
                     }
-                    // Check if this is a JSON command message
-                    if let Ok(json) = serde_json::from_str::<serde_json::Value>(&msg) {
-                        if json["type"].as_str() == Some("cmd") {
-                            let command = json["command"].as_str().unwrap_or("").to_string();
+                    // Check if this is a typed protocol message
+                    if let Ok(ws_msg) = serde_json::from_str::<WsMessage>(&msg) {
+                        if let WsMessage::Cmd { command } = ws_msg {
                             println!("\nRun: {}?", command);
 
                             let execute = if yes {
@@ -120,14 +121,10 @@ pub async fn run(yes: bool) -> Result<()> {
                                 "(skipped)".to_string()
                             };
 
-                            let result_msg = serde_json::json!({
-                                "type": "cmd_result",
-                                "command": command,
-                                "output": output,
-                            })
-                            .to_string();
+                            let result_msg =
+                                serde_json::to_string(&WsMessage::CmdResult { command, output })?;
                             write.send(Message::text(result_msg)).await?;
-                            // Reset spinner for next chunk
+                            // Reset spinner to wait for the rest of the answer
                             first_chunk = true;
                             spinner.reset();
                             spinner.set_message("Waiting for answer");
