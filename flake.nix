@@ -22,7 +22,22 @@
       };
     in
     {
-      devShells.default = import ./nix/devshell.nix { inherit pkgs; };
+      devShells.default = pkgs.mkShell {
+        packages = with pkgs; [
+          (rust-bin.stable.latest.default.override {
+            targets = [ "wasm32-unknown-unknown" ];
+          })
+          wasm-bindgen-cli
+          openssl.dev
+          pkg-config
+        ];
+
+        env = { };
+
+        shellHook = ''
+
+        '';
+      };
       formatter = pkgs.nixpkgs-fmt;
     });
 }
