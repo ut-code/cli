@@ -1,6 +1,5 @@
 mod ask;
-mod respond;
-mod ui;
+mod serve;
 
 use clap::{Parser, Subcommand};
 
@@ -9,17 +8,17 @@ use clap::{Parser, Subcommand};
 #[command(name = "coding-human", version)]
 struct Cli {
     #[command(subcommand)]
-    command: Option<Commands>,
+    command: Commands,
 }
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Ask a question and get a response
+    /// Ask a question to an available programmer
     Ask,
-    /// Respond to user questions as a programmer
-    Respond {
-        /// The room ID to connect to
-        roomid: String,
+    /// Register as a programmer and wait for questions
+    Serve {
+        /// Your display name shown to clients
+        label: String,
     },
 }
 
@@ -28,20 +27,17 @@ async fn main() {
     let cli = Cli::parse();
 
     match cli.command {
-        Some(Commands::Ask) => {
+        Commands::Ask => {
             if let Err(e) = ask::run().await {
                 eprintln!("Error: {}", e);
                 std::process::exit(1);
             }
         }
-        Some(Commands::Respond { roomid }) => {
-            if let Err(e) = respond::run(roomid).await {
+        Commands::Serve { label } => {
+            if let Err(e) = serve::run(label).await {
                 eprintln!("Error: {}", e);
                 std::process::exit(1);
             }
-        }
-        None => {
-            ui::run().unwrap();
         }
     }
 }

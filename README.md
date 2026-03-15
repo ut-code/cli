@@ -1,8 +1,8 @@
-# ut.code(); CLI
+# coding-human
 
-A terminal UI for browsing the [ut.code();](https://utcode.net) community.
+A CLI tool for real-time Q&A between a client and a programmer over WebSocket.
 
-![demo](docs/images/cli.png)
+Programmers register themselves in a queue; clients browse the queue and connect to a programmer of their choice.
 
 ## Install
 
@@ -12,25 +12,32 @@ cargo install --git https://github.com/ut-code/cli
 
 ## Usage
 
+### Programmer: join the queue
+
 ```sh
-utcode
+coding-human serve <LABEL>
 ```
 
-Launches a full-screen interactive TUI with four categories:
+Registers you in the queue with the given display name, creates a room, and waits for a client to connect. Once connected, questions arrive automatically and you type answers line by line. Press `Ctrl+D` to finish a response and wait for the next question.
 
-| Category | Contents |
-|----------|----------|
-| About    | Organization overview, activities, tech stack, and contact info |
-| Projects | Active projects built by ut.code(); members |
-| Articles | Recent articles and event reports from utcode.net |
-| Members  | Current members and their areas of work |
+Example:
 
-### Navigation
+```sh
+coding-human serve "Alice (Rust / systems)"
+```
 
-| Key | Action |
-|-----|--------|
-| `Tab` / `→` / `l` | Move focus to the next panel |
-| `Shift+Tab` / `←` / `h` | Move focus to the previous panel |
-| `↓` / `j` | Select next item |
-| `↑` / `k` | Select previous item |
-| `q` / `Esc` | Quit |
+### Client: ask a question
+
+```sh
+coding-human ask
+```
+
+Fetches the list of available programmers, lets you pick one, then opens a session. Type questions at the prompt; answers stream back in real time. Type `/quit` or press `Ctrl+D` to exit.
+
+## Configuration
+
+The server URL defaults to `http://localhost:8787`. Override it with a `SERVER_URL` environment variable or a `.env` file:
+
+```
+SERVER_URL=https://your-server.example.com
+```

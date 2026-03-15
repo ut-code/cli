@@ -9,9 +9,6 @@ path = "src/main.rs"
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }
-cfonts = "1"
-ratatui = "0.29"
-crossterm = "0.28"
 tokio = { version = "1", features = ["full"] }
 tokio-tungstenite = "0.23"
 serde_json = "1"
