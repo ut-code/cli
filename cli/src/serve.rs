@@ -55,18 +55,51 @@ pub async fn run(label: String) -> Result<()> {
         };
 
         println!("\nQuestion: {}\n", question);
-        println!("Answer (Ctrl+D to finish):\n");
+        println!("Answer (Ctrl+D to finish, prefix a line with $ to run a command on client):\n");
 
         loop {
             let mut line = String::new();
-            if async_stdin.read_line(&mut line).await? == 0 {
-                write.send(Message::Text("[DONE]".to_string())).await?;
-                println!();
-                break;
+            tokio::select! {
+                n = async_stdin.read_line(&mut line) => {
+                    if n? == 0 {
+                        write.send(Message::Text("[DONE]".to_string())).await?;
+                        println!();
+                        break;
+                    }
+                    let trimmed = line.trim_end_matches('\n');
+                    if let Some(cmd) = trimmed.strip_prefix('$') {
+                        let command = cmd.trim().to_string();
+                        let msg = serde_json::json!({"type": "cmd", "command": command}).to_string();
+                        write.send(Message::text(msg)).await?;
+                    } else {
+                        write.send(Message::text(trimmed)).await?;
+                    }
+                }
+                ws_msg = read.next() => {
+                    match ws_msg {
+                        Some(Ok(Message::Text(msg))) => {
+                            if let Ok(json) = serde_json::from_str::<serde_json::Value>(&msg) {
+                                if json["type"].as_str() == Some("cmd_result") {
+                                    let command = json["command"].as_str().unwrap_or("");
+                                    let output = json["output"].as_str().unwrap_or("");
+                                    println!("\n[cmd result] $ {}\n{}", command, output);
+                                }
+                            }
+                        }
+                        Some(Ok(Message::Close(_))) => {
+                            println!("Client disconnected.");
+                            let _ = client
+                                .delete(format!("{}/queue/{}", server_url, room_id))
+                                .send()
+                                .await;
+                            return Ok(());
+                        }
+                        Some(Err(e)) => return Err(e.into()),
+                        None => return Err(anyhow::anyhow!("Connection lost")),
+                        _ => {}
+                    }
+                }
             }
-            write
-                .send(Message::text(line.trim_end_matches('\n')))
-                .await?;
         }
     }
 }

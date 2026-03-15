@@ -6,7 +6,7 @@ use reqwest::Client;
 use std::io::{self, Write};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 
-pub async fn run() -> Result<()> {
+pub async fn run(yes: bool) -> Result<()> {
     dotenvy::dotenv().ok();
     let server_url =
         std::env::var("SERVER_URL").unwrap_or_else(|_| "http://localhost:8787".to_string());
@@ -85,6 +85,54 @@ pub async fn run() -> Result<()> {
                     if msg == "[DONE]" {
                         println!();
                         break;
+                    }
+                    // Check if this is a JSON command message
+                    if let Ok(json) = serde_json::from_str::<serde_json::Value>(&msg) {
+                        if json["type"].as_str() == Some("cmd") {
+                            let command = json["command"].as_str().unwrap_or("").to_string();
+                            println!("\nRun: {}?", command);
+
+                            let execute = if yes {
+                                true
+                            } else {
+                                print!("[y/n]: ");
+                                io::stdout().flush()?;
+                                let mut answer = String::new();
+                                io::stdin().read_line(&mut answer)?;
+                                answer.trim().eq_ignore_ascii_case("y")
+                            };
+
+                            let output = if execute {
+                                let result = tokio::process::Command::new("sh")
+                                    .arg("-c")
+                                    .arg(&command)
+                                    .output()
+                                    .await?;
+                                let stdout = String::from_utf8_lossy(&result.stdout).to_string();
+                                let stderr = String::from_utf8_lossy(&result.stderr).to_string();
+                                match (stdout.is_empty(), stderr.is_empty()) {
+                                    (false, false) => format!("{}\n[stderr]\n{}", stdout, stderr),
+                                    (false, true) => stdout,
+                                    (true, false) => stderr,
+                                    (true, true) => String::new(),
+                                }
+                            } else {
+                                "(skipped)".to_string()
+                            };
+
+                            let result_msg = serde_json::json!({
+                                "type": "cmd_result",
+                                "command": command,
+                                "output": output,
+                            })
+                            .to_string();
+                            write.send(Message::text(result_msg)).await?;
+                            // Reset spinner for next chunk
+                            first_chunk = true;
+                            spinner.reset();
+                            spinner.set_message("Waiting for answer");
+                            continue;
+                        }
                     }
                     print!("{}", msg);
                     io::stdout().flush()?;
