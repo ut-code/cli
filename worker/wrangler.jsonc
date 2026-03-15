@@ -1,0 +1,21 @@
+{
+  "$schema": "https://raw.githubusercontent.com/cloudflare/workers-sdk/main/packages/wrangler/config-schema.json",
+  "name": "coding-human-worker",
+  "main": "build/worker/shim.mjs",
+  "compatibility_date": "2026-03-14",
+  "durable_objects": {
+    "bindings": [
+      { "name": "QUEUE", "class_name": "QueueDO" },
+      { "name": "ROOM", "class_name": "RoomSession" }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_classes": ["QueueDO", "RoomSession"]
+    }
+  ],
+  "build": {
+    "command": "cargo install worker-build && worker-build --release"
+  }
+}

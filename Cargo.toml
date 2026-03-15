@@ -1,19 +1,6 @@
-[package]
-name = "coding-human"
-version = "0.1.0"
-edition = "2021"
-
-[[bin]]
-name = "coding-human"
-path = "src/main.rs"
-
-[dependencies]
-clap = { version = "4", features = ["derive"] }
-tokio = { version = "1", features = ["full"] }
-tokio-tungstenite = "0.23"
-serde_json = "1"
-dotenvy = "0.15"
-futures = "0.3"
-indicatif = "0.17"
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
-anyhow = "1"
+[workspace]
+members = [
+    "cli",
+    "worker",
+]
+resolver = "2"
