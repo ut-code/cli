@@ -10,3 +10,5 @@
 
 # Finder (macOS) folder config
 .DS_Store
+
+.direnv
