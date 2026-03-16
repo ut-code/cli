@@ -11,4 +11,6 @@ pub enum WsMessage {
     CmdResult { command: String, output: String },
     /// Client → Programmer: contents of a file referenced with @filepath
     File { path: String, content: String },
+    /// Programmer → Client: unified diff of an edited file
+    Diff { path: String, diff: String },
 }

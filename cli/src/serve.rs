@@ -60,6 +60,61 @@ pub async fn run(label: String) -> Result<()> {
                         }
                         tokio::fs::write(&dest, &content).await?;
                         println!("Received file: {} -> {}", path, dest.display());
+
+                        // Open the file in $EDITOR so the programmer can edit it
+                        let editor =
+                            std::env::var("EDITOR").unwrap_or_else(|_| "nvim".to_string());
+                        match tokio::process::Command::new(&editor)
+                            .arg(&dest)
+                            .status()
+                            .await
+                        {
+                            Err(e) => eprintln!("Failed to open editor '{}': {}", editor, e),
+                            Ok(_) => {
+                                // Generate a unified diff between original and edited content
+                                let orig_tmp = base.join(format!(
+                                    ".orig.{}",
+                                    path.replace('/', "_")
+                                ));
+                                if tokio::fs::write(&orig_tmp, &content).await.is_ok() {
+                                    if let (Some(orig_str), Some(dest_str)) =
+                                        (orig_tmp.to_str(), dest.to_str())
+                                    {
+                                        let diff_out = tokio::process::Command::new("diff")
+                                            .args(["-u", orig_str, dest_str])
+                                            .output()
+                                            .await;
+                                        let _ = tokio::fs::remove_file(&orig_tmp).await;
+                                        if let Ok(out) = diff_out {
+                                            let diff_text = String::from_utf8_lossy(&out.stdout)
+                                                .to_string();
+                                            if !diff_text.is_empty() {
+                                                match serde_json::to_string(&WsMessage::Diff {
+                                                    path: path.clone(),
+                                                    diff: diff_text,
+                                                }) {
+                                                    Ok(diff_msg) => {
+                                                        if let Err(e) = write
+                                                            .send(Message::text(diff_msg))
+                                                            .await
+                                                        {
+                                                            eprintln!(
+                                                                "Failed to send diff: {}",
+                                                                e
+                                                            );
+                                                        }
+                                                    }
+                                                    Err(e) => eprintln!(
+                                                        "Failed to serialize diff: {}",
+                                                        e
+                                                    ),
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
                         continue;
                     }
                     break msg;
