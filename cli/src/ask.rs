@@ -162,6 +162,26 @@ pub async fn run(yes: bool) -> Result<()> {
                                 spinner.set_message("Waiting for answer");
                                 continue;
                             }
+                            WsMessage::EditRequest { path } => {
+                                match tokio::fs::read_to_string(&path).await {
+                                    Ok(content) => {
+                                        let file_msg = serde_json::to_string(&WsMessage::File {
+                                            path: path.clone(),
+                                            content,
+                                        })?;
+                                        write.send(Message::text(file_msg)).await?;
+                                        println!("\nWaiting for programmer to edit {}...", path);
+                                    }
+                                    Err(e) => {
+                                        eprintln!("Warning: could not read '{}': {}", path, e)
+                                    }
+                                }
+                                // Reset spinner to wait for the rest of the answer
+                                first_chunk = true;
+                                spinner.reset();
+                                spinner.set_message("Waiting for answer");
+                                continue;
+                            }
                             WsMessage::Diff { path, diff } => {
                                 if first_chunk {
                                     spinner.finish_and_clear();

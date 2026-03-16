@@ -59,96 +59,7 @@ pub async fn run(label: String) -> Result<()> {
                             tokio::fs::create_dir_all(parent).await?;
                         }
                         tokio::fs::write(&dest, &content).await?;
-                        println!("Received file: {} -> {}", path, dest.display());
-
-                        // Open the file in $EDITOR so the programmer can edit it
-                        let editor =
-                            std::env::var("EDITOR").unwrap_or_else(|_| "nvim".to_string());
-                        match tokio::process::Command::new(&editor)
-                            .arg(&dest)
-                            .status()
-                            .await
-                        {
-                            Err(e) => eprintln!("Failed to open editor '{}': {}", editor, e),
-                            Ok(_) => {
-                                // Generate a unified diff between original and edited content
-                                let orig_tmp = base.join(format!(
-                                    ".orig.{}",
-                                    path.replace('/', "_")
-                                ));
-                                if tokio::fs::write(&orig_tmp, &content).await.is_ok() {
-                                    if let (Some(orig_str), Some(dest_str)) =
-                                        (orig_tmp.to_str(), dest.to_str())
-                                    {
-                                        let diff_out = tokio::process::Command::new("diff")
-                                            .args(["-u", orig_str, dest_str])
-                                            .output()
-                                            .await;
-                                        let _ = tokio::fs::remove_file(&orig_tmp).await;
-                                        if let Ok(out) = diff_out {
-                                            let diff_text = String::from_utf8_lossy(&out.stdout)
-                                                .to_string();
-                                            if !diff_text.is_empty() {
-                                                println!("Waiting for your confirmation to send diff...");
-                                                let mut buf = String::new();
-                                                let _ = async_stdin.read_line(&mut buf).await;
-                                                match serde_json::to_string(&WsMessage::Diff {
-                                                    path: path.clone(),
-                                                    diff: diff_text,
-                                                }) {
-                                                    Ok(diff_msg) => {
-                                                        if let Err(e) = write
-                                                            .send(Message::text(diff_msg))
-                                                            .await
-                                                        {
-                                                            eprintln!(
-                                                                "Failed to send diff: {}",
-                                                                e
-                                                            );
-                                                        } else {
-                                                            println!("Waiting for client response...");
-                                                            loop {
-                                                                match read.next().await {
-                                                                    Some(Ok(Message::Text(msg))) => {
-                                                                        if let Ok(WsMessage::DiffResponse { accepted }) =
-                                                                            serde_json::from_str::<WsMessage>(&msg)
-                                                                        {
-                                                                            if accepted {
-                                                                                println!("Client accepted the changes.");
-                                                                            } else {
-                                                                                println!("Client rejected the changes.");
-                                                                            }
-                                                                            break;
-                                                                        } else {
-                                                                            eprintln!("Unexpected message while waiting for diff response: {}", msg);
-                                                                        }
-                                                                    }
-                                                                    Some(Ok(Message::Close(_))) => {
-                                                                        println!("Client disconnected.");
-                                                                        let _ = client
-                                                                            .delete(format!("{}/queue/{}", server_url, room_id))
-                                                                            .send()
-                                                                            .await;
-                                                                        return Ok(());
-                                                                    }
-                                                                    Some(Err(e)) => return Err(e.into()),
-                                                                    None => return Err(anyhow::anyhow!("Connection lost while waiting for diff response")),
-                                                                    _ => {}
-                                                                }
-                                                            }
-                                                        }
-                                                    }
-                                                    Err(e) => eprintln!(
-                                                        "Failed to serialize diff: {}",
-                                                        e
-                                                    ),
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
+                        println!("Received file for context: {} -> {}", path, dest.display());
                         continue;
                     }
                     break msg;
@@ -181,7 +92,164 @@ pub async fn run(label: String) -> Result<()> {
                         break;
                     }
                     let trimmed = line.trim_end_matches('\n');
-                    if let Some(cmd) = trimmed.strip_prefix('$') {
+                    // Check for @filepath token to trigger an edit request
+                    let edit_path = trimmed
+                        .split_whitespace()
+                        .find(|t| t.starts_with('@') && t.len() > 1)
+                        .and_then(|t| t.strip_prefix('@'))
+                        .map(|p| p.to_string());
+                    if let Some(path) = edit_path {
+                        let edit_req =
+                            serde_json::to_string(&WsMessage::EditRequest { path: path.clone() })?;
+                        write.send(Message::text(edit_req)).await?;
+                        // Wait for the File response and then run the edit workflow
+                        'wait_file: loop {
+                            match read.next().await {
+                                Some(Ok(Message::Text(msg))) => {
+                                    if let Ok(WsMessage::File { path: fp, content }) =
+                                        serde_json::from_str::<WsMessage>(&msg)
+                                    {
+                                        let base = std::path::Path::new("/tmp/coding-human");
+                                        let dest = base.join(&fp);
+                                        if !dest.starts_with(base)
+                                            || std::path::Path::new(&fp)
+                                                .components()
+                                                .any(|c| c == std::path::Component::ParentDir)
+                                        {
+                                            eprintln!("Rejected unsafe file path: {}", fp);
+                                            break 'wait_file;
+                                        }
+                                        if let Some(parent) = dest.parent() {
+                                            tokio::fs::create_dir_all(parent).await?;
+                                        }
+                                        tokio::fs::write(&dest, &content).await?;
+                                        println!("Received file: {} -> {}", fp, dest.display());
+                                        let editor = std::env::var("EDITOR")
+                                            .unwrap_or_else(|_| "nvim".to_string());
+                                        match tokio::process::Command::new(&editor)
+                                            .arg(&dest)
+                                            .status()
+                                            .await
+                                        {
+                                            Err(e) => eprintln!(
+                                                "Failed to open editor '{}': {}",
+                                                editor, e
+                                            ),
+                                            Ok(_) => {
+                                                let orig_tmp = base.join(format!(
+                                                    ".orig.{}",
+                                                    fp.replace('/', "_")
+                                                ));
+                                                if tokio::fs::write(&orig_tmp, &content)
+                                                    .await
+                                                    .is_ok()
+                                                {
+                                                    if let (Some(orig_str), Some(dest_str)) =
+                                                        (orig_tmp.to_str(), dest.to_str())
+                                                    {
+                                                        let diff_out =
+                                                            tokio::process::Command::new("diff")
+                                                                .args(["-u", orig_str, dest_str])
+                                                                .output()
+                                                                .await;
+                                                        let _ =
+                                                            tokio::fs::remove_file(&orig_tmp).await;
+                                                        if let Ok(out) = diff_out {
+                                                            let diff_text =
+                                                                String::from_utf8_lossy(&out.stdout)
+                                                                    .to_string();
+                                                            if !diff_text.is_empty() {
+                                                                println!("Waiting for your confirmation to send diff...");
+                                                                let mut buf = String::new();
+                                                                let _ = async_stdin
+                                                                    .read_line(&mut buf)
+                                                                    .await;
+                                                                match serde_json::to_string(
+                                                                    &WsMessage::Diff {
+                                                                        path: fp.clone(),
+                                                                        diff: diff_text,
+                                                                    },
+                                                                ) {
+                                                                    Ok(diff_msg) => {
+                                                                        if let Err(e) = write
+                                                                            .send(Message::text(
+                                                                                diff_msg,
+                                                                            ))
+                                                                            .await
+                                                                        {
+                                                                            eprintln!(
+                                                                                "Failed to send diff: {}",
+                                                                                e
+                                                                            );
+                                                                        } else {
+                                                                            println!("Waiting for client response...");
+                                                                            loop {
+                                                                                match read
+                                                                                    .next()
+                                                                                    .await
+                                                                                {
+                                                                                    Some(Ok(Message::Text(msg))) => {
+                                                                                        if let Ok(WsMessage::DiffResponse { accepted }) =
+                                                                                            serde_json::from_str::<WsMessage>(&msg)
+                                                                                        {
+                                                                                            if accepted {
+                                                                                                println!("Client accepted the changes.");
+                                                                                            } else {
+                                                                                                println!("Client rejected the changes.");
+                                                                                            }
+                                                                                            break;
+                                                                                        } else {
+                                                                                            eprintln!("Unexpected message while waiting for diff response: {}", msg);
+                                                                                        }
+                                                                                    }
+                                                                                    Some(Ok(Message::Close(_))) => {
+                                                                                        println!("Client disconnected.");
+                                                                                        let _ = client
+                                                                                            .delete(format!("{}/queue/{}", server_url, room_id))
+                                                                                            .send()
+                                                                                            .await;
+                                                                                        return Ok(());
+                                                                                    }
+                                                                                    Some(Err(e)) => {
+                                                                                        return Err(e.into());
+                                                                                    }
+                                                                                    None => {
+                                                                                        return Err(anyhow::anyhow!("Connection lost while waiting for diff response"));
+                                                                                    }
+                                                                                    _ => {}
+                                                                                }
+                                                                            }
+                                                                        }
+                                                                    }
+                                                                    Err(e) => eprintln!(
+                                                                        "Failed to serialize diff: {}",
+                                                                        e
+                                                                    ),
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        break 'wait_file;
+                                    }
+                                    // Not a File message; keep waiting
+                                }
+                                Some(Ok(Message::Close(_))) => {
+                                    println!("Client disconnected.");
+                                    let _ = client
+                                        .delete(format!("{}/queue/{}", server_url, room_id))
+                                        .send()
+                                        .await;
+                                    return Ok(());
+                                }
+                                Some(Err(e)) => return Err(e.into()),
+                                None => return Err(anyhow::anyhow!("Connection lost")),
+                                _ => {}
+                            }
+                        }
+                    } else if let Some(cmd) = trimmed.strip_prefix('$') {
                         let command = cmd.trim().to_string();
                         let msg = serde_json::to_string(&WsMessage::Cmd { command })?;
                         write.send(Message::text(msg)).await?;
