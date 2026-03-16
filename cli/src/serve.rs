@@ -89,6 +89,9 @@ pub async fn run(label: String) -> Result<()> {
                                             let diff_text = String::from_utf8_lossy(&out.stdout)
                                                 .to_string();
                                             if !diff_text.is_empty() {
+                                                println!("Waiting for your confirmation to send diff...");
+                                                let mut buf = String::new();
+                                                let _ = async_stdin.read_line(&mut buf).await;
                                                 match serde_json::to_string(&WsMessage::Diff {
                                                     path: path.clone(),
                                                     diff: diff_text,
@@ -102,6 +105,37 @@ pub async fn run(label: String) -> Result<()> {
                                                                 "Failed to send diff: {}",
                                                                 e
                                                             );
+                                                        } else {
+                                                            println!("Waiting for client response...");
+                                                            loop {
+                                                                match read.next().await {
+                                                                    Some(Ok(Message::Text(msg))) => {
+                                                                        if let Ok(WsMessage::DiffResponse { accepted }) =
+                                                                            serde_json::from_str::<WsMessage>(&msg)
+                                                                        {
+                                                                            if accepted {
+                                                                                println!("Client accepted the changes.");
+                                                                            } else {
+                                                                                println!("Client rejected the changes.");
+                                                                            }
+                                                                            break;
+                                                                        } else {
+                                                                            eprintln!("Unexpected message while waiting for diff response: {}", msg);
+                                                                        }
+                                                                    }
+                                                                    Some(Ok(Message::Close(_))) => {
+                                                                        println!("Client disconnected.");
+                                                                        let _ = client
+                                                                            .delete(format!("{}/queue/{}", server_url, room_id))
+                                                                            .send()
+                                                                            .await;
+                                                                        return Ok(());
+                                                                    }
+                                                                    Some(Err(e)) => return Err(e.into()),
+                                                                    None => return Err(anyhow::anyhow!("Connection lost while waiting for diff response")),
+                                                                    _ => {}
+                                                                }
+                                                            }
                                                         }
                                                     }
                                                     Err(e) => eprintln!(

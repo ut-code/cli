@@ -208,6 +208,12 @@ pub async fn run(yes: bool) -> Result<()> {
                                 } else {
                                     println!("Diff not applied.");
                                 }
+
+                                let response_msg = serde_json::to_string(&WsMessage::DiffResponse {
+                                    accepted: apply,
+                                })?;
+                                write.send(Message::text(response_msg)).await?;
+
                                 // Reset spinner to wait for the rest of the answer
                                 first_chunk = true;
                                 spinner.reset();
