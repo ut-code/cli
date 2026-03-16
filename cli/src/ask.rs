@@ -71,7 +71,32 @@ pub async fn run(yes: bool) -> Result<()> {
             continue;
         }
 
-        write.send(Message::text(question)).await?;
+        // Extract @filepath mentions and send each file before the question
+        let mut cleaned_tokens: Vec<&str> = Vec::new();
+        for token in question.split_whitespace() {
+            if let Some(path) = token.strip_prefix('@') {
+                if !path.is_empty() {
+                    match tokio::fs::read_to_string(path).await {
+                        Ok(content) => {
+                            let file_msg = serde_json::to_string(&WsMessage::File {
+                                path: path.to_string(),
+                                content,
+                            })?;
+                            write.send(Message::text(file_msg)).await?;
+                        }
+                        Err(e) => eprintln!("Warning: could not read '{}': {}", path, e),
+                    }
+                    continue;
+                }
+            }
+            cleaned_tokens.push(token);
+        }
+        let cleaned_question = cleaned_tokens.join(" ");
+        if cleaned_question.is_empty() {
+            continue;
+        }
+
+        write.send(Message::text(cleaned_question)).await?;
 
         let spinner = ProgressBar::new_spinner();
         spinner.set_message("Waiting for answer");
@@ -90,45 +115,106 @@ pub async fn run(yes: bool) -> Result<()> {
                     }
                     // Check if this is a typed protocol message
                     if let Ok(ws_msg) = serde_json::from_str::<WsMessage>(&msg) {
-                        if let WsMessage::Cmd { command } = ws_msg {
-                            println!("\nRun: {}?", command);
+                        match ws_msg {
+                            WsMessage::Cmd { command } => {
+                                println!("\nRun: {}?", command);
 
-                            let execute = if yes {
-                                true
-                            } else {
-                                print!("[y/n]: ");
-                                io::stdout().flush()?;
-                                let mut answer = String::new();
-                                io::stdin().read_line(&mut answer)?;
-                                answer.trim().eq_ignore_ascii_case("y")
-                            };
+                                let execute = if yes {
+                                    true
+                                } else {
+                                    print!("[y/n]: ");
+                                    io::stdout().flush()?;
+                                    let mut answer = String::new();
+                                    io::stdin().read_line(&mut answer)?;
+                                    answer.trim().eq_ignore_ascii_case("y")
+                                };
 
-                            let output = if execute {
-                                let result = tokio::process::Command::new("sh")
-                                    .arg("-c")
-                                    .arg(&command)
-                                    .output()
-                                    .await?;
-                                let stdout = String::from_utf8_lossy(&result.stdout).to_string();
-                                let stderr = String::from_utf8_lossy(&result.stderr).to_string();
-                                match (stdout.is_empty(), stderr.is_empty()) {
-                                    (false, false) => format!("{}\n[stderr]\n{}", stdout, stderr),
-                                    (false, true) => stdout,
-                                    (true, false) => stderr,
-                                    (true, true) => String::new(),
+                                let output = if execute {
+                                    let result = tokio::process::Command::new("sh")
+                                        .arg("-c")
+                                        .arg(&command)
+                                        .output()
+                                        .await?;
+                                    let stdout =
+                                        String::from_utf8_lossy(&result.stdout).to_string();
+                                    let stderr =
+                                        String::from_utf8_lossy(&result.stderr).to_string();
+                                    match (stdout.is_empty(), stderr.is_empty()) {
+                                        (false, false) => {
+                                            format!("{}\n[stderr]\n{}", stdout, stderr)
+                                        }
+                                        (false, true) => stdout,
+                                        (true, false) => stderr,
+                                        (true, true) => String::new(),
+                                    }
+                                } else {
+                                    "(skipped)".to_string()
+                                };
+
+                                let result_msg = serde_json::to_string(&WsMessage::CmdResult {
+                                    command,
+                                    output,
+                                })?;
+                                write.send(Message::text(result_msg)).await?;
+                                // Reset spinner to wait for the rest of the answer
+                                first_chunk = true;
+                                spinner.reset();
+                                spinner.set_message("Waiting for answer");
+                                continue;
+                            }
+                            WsMessage::Diff { path, diff } => {
+                                if first_chunk {
+                                    spinner.finish_and_clear();
                                 }
-                            } else {
-                                "(skipped)".to_string()
-                            };
+                                println!("\nDiff for {}:\n{}", path, diff);
 
-                            let result_msg =
-                                serde_json::to_string(&WsMessage::CmdResult { command, output })?;
-                            write.send(Message::text(result_msg)).await?;
-                            // Reset spinner to wait for the rest of the answer
-                            first_chunk = true;
-                            spinner.reset();
-                            spinner.set_message("Waiting for answer");
-                            continue;
+                                let apply = if yes {
+                                    true
+                                } else {
+                                    print!("apply? [y/n]: ");
+                                    io::stdout().flush()?;
+                                    let mut answer = String::new();
+                                    io::stdin().read_line(&mut answer)?;
+                                    answer.trim().eq_ignore_ascii_case("y")
+                                };
+
+                                if apply {
+                                    let patch_tmp = std::env::temp_dir().join(format!(
+                                        "coding-human-patch-{}.patch",
+                                        std::process::id()
+                                    ));
+                                    tokio::fs::write(&patch_tmp, &diff).await?;
+                                    let result = tokio::process::Command::new("patch")
+                                        .args([
+                                            "-i",
+                                            patch_tmp.to_str().unwrap_or(""),
+                                            &path,
+                                        ])
+                                        .output()
+                                        .await?;
+                                    let _ = tokio::fs::remove_file(&patch_tmp).await;
+                                    let stdout =
+                                        String::from_utf8_lossy(&result.stdout).to_string();
+                                    let stderr =
+                                        String::from_utf8_lossy(&result.stderr).to_string();
+                                    if result.status.success() {
+                                        println!("Patch applied successfully.");
+                                        if !stdout.is_empty() {
+                                            print!("{}", stdout);
+                                        }
+                                    } else {
+                                        eprintln!("Patch failed: {}{}", stdout, stderr);
+                                    }
+                                } else {
+                                    println!("Diff not applied.");
+                                }
+                                // Reset spinner to wait for the rest of the answer
+                                first_chunk = true;
+                                spinner.reset();
+                                spinner.set_message("Waiting for answer");
+                                continue;
+                            }
+                            _ => {}
                         }
                     }
                     print!("{}", msg);

@@ -9,4 +9,8 @@ pub enum WsMessage {
     Cmd { command: String },
     /// Client → Programmer: result of a shell command
     CmdResult { command: String, output: String },
+    /// Client → Programmer: contents of a file referenced with @filepath
+    File { path: String, content: String },
+    /// Programmer → Client: unified diff of an edited file
+    Diff { path: String, diff: String },
 }

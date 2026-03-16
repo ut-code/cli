@@ -40,7 +40,85 @@ pub async fn run(label: String) -> Result<()> {
         println!("\nWaiting for a question...");
         let question = loop {
             match read.next().await {
-                Some(Ok(Message::Text(msg))) => break msg,
+                Some(Ok(Message::Text(msg))) => {
+                    if let Ok(WsMessage::File { path, content }) =
+                        serde_json::from_str::<WsMessage>(&msg)
+                    {
+                        let base = std::path::Path::new("/tmp/coding-human");
+                        let dest = base.join(&path);
+                        // Reject paths that escape the base directory
+                        if !dest.starts_with(base)
+                            || std::path::Path::new(&path)
+                                .components()
+                                .any(|c| c == std::path::Component::ParentDir)
+                        {
+                            eprintln!("Rejected unsafe file path: {}", path);
+                            continue;
+                        }
+                        if let Some(parent) = dest.parent() {
+                            tokio::fs::create_dir_all(parent).await?;
+                        }
+                        tokio::fs::write(&dest, &content).await?;
+                        println!("Received file: {} -> {}", path, dest.display());
+
+                        // Open the file in $EDITOR so the programmer can edit it
+                        let editor =
+                            std::env::var("EDITOR").unwrap_or_else(|_| "nvim".to_string());
+                        match tokio::process::Command::new(&editor)
+                            .arg(&dest)
+                            .status()
+                            .await
+                        {
+                            Err(e) => eprintln!("Failed to open editor '{}': {}", editor, e),
+                            Ok(_) => {
+                                // Generate a unified diff between original and edited content
+                                let orig_tmp = base.join(format!(
+                                    ".orig.{}",
+                                    path.replace('/', "_")
+                                ));
+                                if tokio::fs::write(&orig_tmp, &content).await.is_ok() {
+                                    if let (Some(orig_str), Some(dest_str)) =
+                                        (orig_tmp.to_str(), dest.to_str())
+                                    {
+                                        let diff_out = tokio::process::Command::new("diff")
+                                            .args(["-u", orig_str, dest_str])
+                                            .output()
+                                            .await;
+                                        let _ = tokio::fs::remove_file(&orig_tmp).await;
+                                        if let Ok(out) = diff_out {
+                                            let diff_text = String::from_utf8_lossy(&out.stdout)
+                                                .to_string();
+                                            if !diff_text.is_empty() {
+                                                match serde_json::to_string(&WsMessage::Diff {
+                                                    path: path.clone(),
+                                                    diff: diff_text,
+                                                }) {
+                                                    Ok(diff_msg) => {
+                                                        if let Err(e) = write
+                                                            .send(Message::text(diff_msg))
+                                                            .await
+                                                        {
+                                                            eprintln!(
+                                                                "Failed to send diff: {}",
+                                                                e
+                                                            );
+                                                        }
+                                                    }
+                                                    Err(e) => eprintln!(
+                                                        "Failed to serialize diff: {}",
+                                                        e
+                                                    ),
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        continue;
+                    }
+                    break msg;
+                }
                 Some(Ok(Message::Close(_))) => {
                     println!("Client disconnected.");
                     // Remove from queue on clean disconnect
