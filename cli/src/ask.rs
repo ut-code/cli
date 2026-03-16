@@ -71,7 +71,32 @@ pub async fn run(yes: bool) -> Result<()> {
             continue;
         }
 
-        write.send(Message::text(question)).await?;
+        // Extract @filepath mentions and send each file before the question
+        let mut cleaned_tokens: Vec<&str> = Vec::new();
+        for token in question.split_whitespace() {
+            if let Some(path) = token.strip_prefix('@') {
+                if !path.is_empty() {
+                    match tokio::fs::read_to_string(path).await {
+                        Ok(content) => {
+                            let file_msg = serde_json::to_string(&WsMessage::File {
+                                path: path.to_string(),
+                                content,
+                            })?;
+                            write.send(Message::text(file_msg)).await?;
+                        }
+                        Err(e) => eprintln!("Warning: could not read '{}': {}", path, e),
+                    }
+                    continue;
+                }
+            }
+            cleaned_tokens.push(token);
+        }
+        let cleaned_question = cleaned_tokens.join(" ");
+        if cleaned_question.is_empty() {
+            continue;
+        }
+
+        write.send(Message::text(cleaned_question)).await?;
 
         let spinner = ProgressBar::new_spinner();
         spinner.set_message("Waiting for answer");

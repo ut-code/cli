@@ -40,7 +40,30 @@ pub async fn run(label: String) -> Result<()> {
         println!("\nWaiting for a question...");
         let question = loop {
             match read.next().await {
-                Some(Ok(Message::Text(msg))) => break msg,
+                Some(Ok(Message::Text(msg))) => {
+                    if let Ok(WsMessage::File { path, content }) =
+                        serde_json::from_str::<WsMessage>(&msg)
+                    {
+                        let base = std::path::Path::new("/tmp/coding-human");
+                        let dest = base.join(&path);
+                        // Reject paths that escape the base directory
+                        if !dest.starts_with(base)
+                            || std::path::Path::new(&path)
+                                .components()
+                                .any(|c| c == std::path::Component::ParentDir)
+                        {
+                            eprintln!("Rejected unsafe file path: {}", path);
+                            continue;
+                        }
+                        if let Some(parent) = dest.parent() {
+                            tokio::fs::create_dir_all(parent).await?;
+                        }
+                        tokio::fs::write(&dest, &content).await?;
+                        println!("Received file: {} -> {}", path, dest.display());
+                        continue;
+                    }
+                    break msg;
+                }
                 Some(Ok(Message::Close(_))) => {
                     println!("Client disconnected.");
                     // Remove from queue on clean disconnect
