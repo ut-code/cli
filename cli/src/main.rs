@@ -1,4 +1,5 @@
 mod ask;
+mod protocol;
 mod serve;
 
 use clap::{Parser, Subcommand};
@@ -14,7 +15,11 @@ struct Cli {
 #[derive(Subcommand)]
 enum Commands {
     /// Ask a question to an available programmer
-    Ask,
+    Ask {
+        /// Automatically execute commands sent by the programmer without prompting
+        #[arg(long)]
+        yes: bool,
+    },
     /// Register as a programmer and wait for questions
     Serve {
         /// Your display name shown to clients
@@ -27,8 +32,8 @@ async fn main() {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Ask => {
-            if let Err(e) = ask::run().await {
+        Commands::Ask { yes } => {
+            if let Err(e) = ask::run(yes).await {
                 eprintln!("Error: {}", e);
                 std::process::exit(1);
             }
