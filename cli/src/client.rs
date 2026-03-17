@@ -93,7 +93,7 @@ pub async fn run(name: String, yes: bool) -> Result<()> {
                         }
                         Err(e) => eprintln!("Warning: could not read '{}': {}", path, e),
                     }
-                    continue;
+                    // Keep the @path token in the question text so the coder can see it
                 }
             }
             cleaned_tokens.push(token);
@@ -218,6 +218,13 @@ pub async fn run(name: String, yes: bool) -> Result<()> {
                                 } else {
                                     println!("Diff not applied.");
                                 }
+
+                                // Notify the coder whether the diff was accepted
+                                let response_msg = serde_json::to_string(
+                                    &WsMessage::DiffResponse { accepted: apply },
+                                )?;
+                                write.send(Message::text(response_msg)).await?;
+
                                 // Reset spinner to wait for the rest of the answer
                                 first_chunk = true;
                                 spinner.reset();
