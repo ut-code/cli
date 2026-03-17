@@ -18,13 +18,13 @@ use ratatui::{
     Frame, Terminal,
 };
 use std::io::{self, Stdout};
+use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 
 // ─── Terminal lifecycle ────────────────────────────────────────────────────────
 
 pub type Term = Terminal<CrosstermBackend<Stdout>>;
 
-/// Set up the alternate screen, raw mode, and return a Terminal.
 pub fn enter() -> Result<Term> {
     enable_raw_mode()?;
     let mut stdout = io::stdout();
@@ -33,8 +33,7 @@ pub fn enter() -> Result<Term> {
     Ok(Terminal::new(backend)?)
 }
 
-/// Restore the terminal to its original state.
-pub fn leave(mut term: Term) -> Result<()> {
+pub fn leave(term: &mut Term) -> Result<()> {
     disable_raw_mode()?;
     execute!(
         term.backend_mut(),
@@ -53,10 +52,10 @@ pub const DARK_BG: Color = Color::Rgb(15, 20, 15);
 pub const PANEL_BG: Color = Color::Rgb(20, 28, 20);
 pub const INPUT_BG: Color = Color::Rgb(25, 35, 25);
 pub const ACCENT: Color = Color::Rgb(130, 255, 160);
+pub const WARN: Color = Color::Rgb(220, 130, 40);
 
-// ─── Banner (cfonts, printed before entering raw mode) ────────────────────────
+// ─── Banner ───────────────────────────────────────────────────────────────────
 
-/// Display a banner with the given text using cfonts (plain stdout, before TUI mode).
 pub fn print_banner(text: &str) {
     let mut options = Options::default();
     options.colors = vec![
@@ -69,10 +68,54 @@ pub fn print_banner(text: &str) {
     println!("{}", output.text);
 }
 
-// ─── Coder-picker (client side) ───────────────────────────────────────────────
+// ─── Shared types ─────────────────────────────────────────────────────────────
 
-/// Interactively pick one item from `entries` (label strings).
-/// Returns the selected index, or `None` if the user pressed Escape / q.
+#[derive(Clone, PartialEq)]
+pub enum ChatRole {
+    You,
+    Peer,
+    System,
+}
+
+/// Messages sent from the async task → TUI draw loop.
+#[derive(Clone)]
+pub enum ChatMsg {
+    Msg { role: ChatRole, text: String },
+    SetWaiting(bool),
+    OpenEditor(String),
+}
+
+impl ChatMsg {
+    pub fn sys(text: impl Into<String>) -> Self {
+        ChatMsg::Msg {
+            role: ChatRole::System,
+            text: text.into(),
+        }
+    }
+    pub fn you(text: impl Into<String>) -> Self {
+        ChatMsg::Msg {
+            role: ChatRole::You,
+            text: text.into(),
+        }
+    }
+    pub fn peer(text: impl Into<String>) -> Self {
+        ChatMsg::Msg {
+            role: ChatRole::Peer,
+            text: text.into(),
+        }
+    }
+}
+
+/// Events sent from the TUI → async task.
+pub enum ChatEvent {
+    Line(String),
+    Eof,
+    Quit,
+    EditorClosed,
+}
+
+// ─── Coder picker ─────────────────────────────────────────────────────────────
+
 pub fn pick_from_list(title: &str, entries: &[String]) -> Result<Option<usize>> {
     if entries.is_empty() {
         return Ok(None);
@@ -84,13 +127,13 @@ pub fn pick_from_list(title: &str, entries: &[String]) -> Result<Option<usize>> 
     loop {
         term.draw(|f| draw_picker(f, title, entries, &mut state))?;
 
-        if event::poll(std::time::Duration::from_millis(200))? {
+        if event::poll(Duration::from_millis(200))? {
             if let Event::Key(key) = event::read()? {
                 match (key.code, key.modifiers) {
                     (KeyCode::Char('c'), KeyModifiers::CONTROL)
                     | (KeyCode::Char('q'), _)
                     | (KeyCode::Esc, _) => {
-                        leave(term)?;
+                        leave(&mut term)?;
                         return Ok(None);
                     }
                     (KeyCode::Down | KeyCode::Char('j'), _) => {
@@ -103,7 +146,7 @@ pub fn pick_from_list(title: &str, entries: &[String]) -> Result<Option<usize>> 
                     }
                     (KeyCode::Enter, _) => {
                         let selected = state.selected();
-                        leave(term)?;
+                        leave(&mut term)?;
                         return Ok(selected);
                     }
                     _ => {}
@@ -127,7 +170,6 @@ fn draw_picker(f: &mut Frame, title: &str, entries: &[String], state: &mut ListS
         .margin(2)
         .split(area);
 
-    // Title bar
     let title_block = Paragraph::new(title)
         .alignment(Alignment::Center)
         .style(Style::default().fg(GREEN).add_modifier(Modifier::BOLD))
@@ -139,7 +181,6 @@ fn draw_picker(f: &mut Frame, title: &str, entries: &[String], state: &mut ListS
         );
     f.render_widget(title_block, chunks[0]);
 
-    // Coder list
     let items: Vec<ListItem> = entries
         .iter()
         .enumerate()
@@ -171,7 +212,6 @@ fn draw_picker(f: &mut Frame, title: &str, entries: &[String], state: &mut ListS
         .highlight_symbol("▶ ");
     f.render_stateful_widget(list, chunks[1], state);
 
-    // Help line
     let help = Paragraph::new("↑/↓ or j/k to navigate  •  Enter to select  •  q / Esc to quit")
         .alignment(Alignment::Center)
         .style(Style::default().fg(DIM));
@@ -180,48 +220,6 @@ fn draw_picker(f: &mut Frame, title: &str, entries: &[String], state: &mut ListS
 
 // ─── Chat session TUI ─────────────────────────────────────────────────────────
 
-/// A message in the chat widget.
-#[derive(Clone)]
-pub struct ChatMsg {
-    pub role: ChatRole,
-    pub text: String,
-}
-
-#[derive(Clone, PartialEq)]
-pub enum ChatRole {
-    /// Local user input (question / answer)
-    You,
-    /// Remote peer (coder's answer / client's question)
-    Peer,
-    /// System info (connection events, command results …)
-    System,
-}
-
-/// Events published by the chat TUI back to the caller.
-pub enum ChatEvent {
-    /// The user submitted a line of text (pressed Enter).
-    Line(String),
-    /// The user pressed Ctrl+D (signals EOF / done).
-    Eof,
-    /// The user pressed Ctrl+C or q (wants to quit the session).
-    Quit,
-}
-
-/// Push a message into the shared log and wake the draw loop.
-#[allow(dead_code)]
-pub fn append_msg(log: &mut Vec<ChatMsg>, role: ChatRole, text: impl Into<String>) {
-    log.push(ChatMsg {
-        role,
-        text: text.into(),
-    });
-}
-
-/// Run the full interactive chat TUI.
-///
-/// * `title`        — window title shown in the border
-/// * `prompt_label` — label shown in the input box (e.g. "Question" / "Answer")
-/// * `log_rx`       — channel that delivers `ChatMsg`s produced by the async task
-/// * `event_tx`     — channel on which we send `ChatEvent`s back to the async task
 pub async fn run_chat(
     title: String,
     prompt_label: String,
@@ -229,39 +227,119 @@ pub async fn run_chat(
     event_tx: mpsc::UnboundedSender<ChatEvent>,
 ) -> Result<()> {
     let mut term = enter()?;
-    let mut log: Vec<ChatMsg> = Vec::new();
+    let mut log: Vec<(ChatRole, String)> = Vec::new();
     let mut input = String::new();
+
+    // Scroll state ──────────────────────────────────────────────────────────────
+    // `scroll_offset` is always in rendered-line units (not message-entry units).
+    // `at_bottom = true` means we track the tail automatically; in that mode
+    // `scroll_offset` is ignored — the effective offset is computed from
+    // total_lines / inner_height each frame.
     let mut scroll_offset: usize = 0;
-    let mut auto_scroll = true;
+    let mut at_bottom = true;
+
+    // Input lock + temporary warning ───────────────────────────────────────────
+    let mut waiting = false;
+    let mut warn_until: Option<Instant> = None;
 
     loop {
-        // Drain all pending log messages
+        // ── Drain incoming control / log messages ──────────────────────────────
         while let Ok(msg) = log_rx.try_recv() {
-            log.push(msg);
-            if auto_scroll {
-                scroll_offset = log.len().saturating_sub(1);
+            match msg {
+                ChatMsg::Msg { role, text } => {
+                    log.push((role, text));
+                    // Don't touch scroll_offset here — it will be computed correctly
+                    // per-frame based on at_bottom + rendered line count.
+                }
+                ChatMsg::SetWaiting(w) => {
+                    waiting = w;
+                    if !w {
+                        warn_until = None; // clear any leftover warning when unblocked
+                    }
+                }
+                ChatMsg::OpenEditor(path) => {
+                    // Suspend the TUI so the editor gets a clean terminal.
+                    leave(&mut term)?;
+                    let editor = std::env::var("EDITOR").unwrap_or_else(|_| "nvim".to_string());
+                    let _ = std::process::Command::new(&editor).arg(&path).status();
+                    // Restore the TUI.
+                    enable_raw_mode()?;
+                    execute!(term.backend_mut(), EnterAlternateScreen, EnableMouseCapture)?;
+                    term.clear()?;
+                    let _ = event_tx.send(ChatEvent::EditorClosed);
+                }
             }
         }
 
+        // ── Pre-compute rendered lines and layout metrics ──────────────────────
+        //
+        // Layout (no margin):
+        //   chunks[0] = Length(3)  →  header
+        //   chunks[1] = Min(1)     →  log  (height = term_h − 7)
+        //   chunks[2] = Length(3)  →  input
+        //   chunks[3] = Length(1)  →  help
+        //
+        // log inner height = (term_h − 7) − 2 borders = term_h − 9
+        //
+        // We pre-render lines here so both the scroll-key handler and draw_chat
+        // share the same line count, preventing the message-index vs line-index
+        // mismatch that broke scrolling.
+
+        let rendered: Vec<Line<'static>> = log.iter().flat_map(|(r, t)| render_msg(r, t)).collect();
+        let total_lines = rendered.len();
+
+        let term_h = term.size().map(|s| s.height as usize).unwrap_or(24);
+        let inner_h = term_h.saturating_sub(9).max(1);
+        let max_offset = total_lines.saturating_sub(inner_h);
+
+        // Effective scroll position (clamped, at_bottom always shows the tail)
+        let effective = if at_bottom {
+            max_offset
+        } else {
+            scroll_offset.min(max_offset)
+        };
+
+        // ── Warning text (shown 2 s after a blocked keypress) ──────────────────
+        let now = Instant::now();
+        let warning: Option<&str> = warn_until
+            .filter(|&t| t > now)
+            .map(|_| "⚠  Cannot send while waiting — please wait for a response.");
+
+        // ── Draw ───────────────────────────────────────────────────────────────
         term.draw(|f| {
-            draw_chat(f, &title, &prompt_label, &log, &input, scroll_offset);
+            draw_chat(
+                f,
+                &title,
+                &prompt_label,
+                &rendered,
+                total_lines,
+                inner_h,
+                effective,
+                &input,
+                waiting,
+                warning,
+            );
         })?;
 
-        // Poll for keyboard events (non-blocking, 50 ms timeout)
-        if event::poll(std::time::Duration::from_millis(50))? {
+        // ── Key events ─────────────────────────────────────────────────────────
+        if event::poll(Duration::from_millis(50))? {
             if let Event::Key(key) = event::read()? {
                 match (key.code, key.modifiers) {
-                    // Quit
+                    // Always-on: quit
                     (KeyCode::Char('c'), KeyModifiers::CONTROL) => {
                         let _ = event_tx.send(ChatEvent::Quit);
                         break;
                     }
-                    // EOF / done
+                    // Always-on: Ctrl+D (Eof / finish answer — needed by coder)
                     (KeyCode::Char('d'), KeyModifiers::CONTROL) => {
                         let _ = event_tx.send(ChatEvent::Eof);
                         input.clear();
                     }
-                    // Submit line
+                    // ── Blocked input: show 2-second warning ────────────────────
+                    (KeyCode::Enter | KeyCode::Char(_) | KeyCode::Backspace, _) if waiting => {
+                        warn_until = Some(now + Duration::from_secs(2));
+                    }
+                    // ── Normal typing ──────────────────────────────────────────
                     (KeyCode::Enter, _) => {
                         let line = input.trim().to_string();
                         input.clear();
@@ -269,45 +347,54 @@ pub async fn run_chat(
                             let _ = event_tx.send(ChatEvent::Line(line));
                         }
                     }
-                    // Typing
                     (KeyCode::Char(c), _) => {
                         input.push(c);
                     }
                     (KeyCode::Backspace, _) => {
                         input.pop();
                     }
-                    // Manual scroll
-                    (KeyCode::PageUp, _) => {
-                        auto_scroll = false;
-                        scroll_offset = scroll_offset.saturating_sub(10);
-                    }
-                    (KeyCode::PageDown, _) => {
-                        if scroll_offset + 10 >= log.len().saturating_sub(1) {
-                            auto_scroll = true;
-                            scroll_offset = log.len().saturating_sub(1);
-                        } else {
-                            scroll_offset += 10;
-                        }
-                    }
+                    // ── Scrolling ──────────────────────────────────────────────
+                    // Always uses `effective` as the base so the first Up/PageUp
+                    // from at_bottom mode starts from the true last line, not a
+                    // stale scroll_offset value.
                     (KeyCode::Up, _) => {
-                        auto_scroll = false;
-                        scroll_offset = scroll_offset.saturating_sub(1);
+                        at_bottom = false;
+                        scroll_offset = effective.saturating_sub(1);
                     }
                     (KeyCode::Down, _) => {
-                        if scroll_offset + 1 >= log.len().saturating_sub(1) {
-                            auto_scroll = true;
-                            scroll_offset = log.len().saturating_sub(1);
+                        let new = effective + 1;
+                        if new >= max_offset {
+                            at_bottom = true;
                         } else {
-                            scroll_offset += 1;
+                            at_bottom = false;
+                            scroll_offset = new;
+                        }
+                    }
+                    (KeyCode::PageUp, _) => {
+                        at_bottom = false;
+                        scroll_offset = effective.saturating_sub(inner_h.max(1) / 2);
+                    }
+                    (KeyCode::PageDown, _) => {
+                        let new = effective + inner_h.max(1) / 2;
+                        if new >= max_offset {
+                            at_bottom = true;
+                        } else {
+                            at_bottom = false;
+                            scroll_offset = new;
                         }
                     }
                     _ => {}
                 }
             }
         }
+
+        // Expire the warning once its time is up
+        if warn_until.map(|t| now >= t).unwrap_or(false) {
+            warn_until = None;
+        }
     }
 
-    leave(term)?;
+    leave(&mut term)?;
     Ok(())
 }
 
@@ -315,13 +402,15 @@ fn draw_chat(
     f: &mut Frame,
     title: &str,
     prompt_label: &str,
-    log: &[ChatMsg],
+    lines: &[Line<'static>],
+    total_lines: usize,
+    _inner_h: usize,
+    scroll_offset: usize, // already computed, clamped effective offset
     input: &str,
-    scroll_offset: usize,
+    waiting: bool,
+    warning: Option<&str>, // non-None = show 2-second blocked warning
 ) {
     let area = f.area();
-
-    // Background
     f.render_widget(Block::default().style(Style::default().bg(DARK_BG)), area);
 
     let chunks = Layout::default()
@@ -335,49 +424,53 @@ fn draw_chat(
         .split(area);
 
     // ── Header ────────────────────────────────────────────────────────────────
-    let header = Paragraph::new(title)
-        .alignment(Alignment::Center)
-        .style(Style::default().fg(GREEN).add_modifier(Modifier::BOLD))
-        .block(
-            Block::default()
-                .borders(Borders::BOTTOM)
-                .border_style(Style::default().fg(DIM)),
-        );
-    f.render_widget(header, chunks[0]);
+    f.render_widget(
+        Paragraph::new(title)
+            .alignment(Alignment::Center)
+            .style(Style::default().fg(GREEN).add_modifier(Modifier::BOLD))
+            .block(
+                Block::default()
+                    .borders(Borders::BOTTOM)
+                    .border_style(Style::default().fg(DIM)),
+            ),
+        chunks[0],
+    );
 
     // ── Message log ───────────────────────────────────────────────────────────
     let msg_area = chunks[1];
-    let inner_height = msg_area.height.saturating_sub(2) as usize; // inside borders
 
-    let lines: Vec<Line> = log.iter().flat_map(|m| render_chat_msg(m)).collect();
-
-    let total_lines = lines.len();
-    let safe_offset = scroll_offset.min(total_lines.saturating_sub(inner_height));
+    // Use the actual widget-rendered inner height for slicing, so the visible
+    // slice matches exactly what ratatui will render inside the borders.
+    let rendered_inner_h = msg_area.height.saturating_sub(2) as usize;
+    let safe_offset = scroll_offset.min(total_lines.saturating_sub(rendered_inner_h));
 
     let visible: Vec<Line> = lines
-        .into_iter()
+        .iter()
+        .cloned()
         .skip(safe_offset)
-        .take(inner_height)
+        .take(rendered_inner_h)
         .collect();
 
-    let log_block = Block::default()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(DIM))
-        .bg(PANEL_BG);
+    f.render_widget(
+        Paragraph::new(visible)
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_type(BorderType::Rounded)
+                    .border_style(Style::default().fg(DIM))
+                    .bg(PANEL_BG),
+            )
+            .wrap(Wrap { trim: false }),
+        msg_area,
+    );
 
-    let log_widget = Paragraph::new(visible)
-        .block(log_block)
-        .wrap(Wrap { trim: false });
-    f.render_widget(log_widget, msg_area);
-
-    // Scrollbar
-    if total_lines > inner_height {
+    // Scrollbar — position uses the same safe_offset so thumb tracks correctly
+    if total_lines > rendered_inner_h {
         let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
             .begin_symbol(Some("↑"))
             .end_symbol(Some("↓"));
         let mut sb_state =
-            ScrollbarState::new(total_lines.saturating_sub(inner_height)).position(safe_offset);
+            ScrollbarState::new(total_lines.saturating_sub(rendered_inner_h)).position(safe_offset);
         f.render_stateful_widget(
             scrollbar,
             msg_area.inner(Margin {
@@ -389,41 +482,77 @@ fn draw_chat(
     }
 
     // ── Input box ─────────────────────────────────────────────────────────────
-    let display_input = format!("{}_", input); // blinking-cursor simulation
-    let input_paragraph = Paragraph::new(display_input)
-        .style(Style::default().fg(Color::White))
-        .block(
+    // Priority: warning (orange) > waiting (dim) > normal (green)
+    let (border_color, box_title, box_content): (Color, String, Line) = if let Some(msg) = warning {
+        (
+            WARN,
+            format!(" ⚠  {} ", prompt_label),
+            Line::from(Span::styled(
+                msg,
+                Style::default().fg(WARN).add_modifier(Modifier::BOLD),
+            )),
+        )
+    } else if waiting {
+        (
+            DIM,
+            " Waiting… ".to_string(),
+            Line::from(Span::styled(
+                "  …",
+                Style::default().fg(DIM).add_modifier(Modifier::DIM),
+            )),
+        )
+    } else {
+        (
+            GREEN,
+            format!(" {} ", prompt_label),
+            Line::from(Span::styled(
+                format!("{}_", input),
+                Style::default().fg(Color::White),
+            )),
+        )
+    };
+
+    f.render_widget(
+        Paragraph::new(box_content).block(
             Block::default()
                 .borders(Borders::ALL)
                 .border_type(BorderType::Rounded)
-                .border_style(Style::default().fg(GREEN))
+                .border_style(Style::default().fg(border_color))
                 .bg(INPUT_BG)
                 .title(Span::styled(
-                    format!(" {} ", prompt_label),
+                    box_title,
                     Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
                 )),
-        );
-    f.render_widget(input_paragraph, chunks[2]);
+        ),
+        chunks[2],
+    );
 
     // ── Help bar ──────────────────────────────────────────────────────────────
-    let help = Paragraph::new(
-        "Enter → send  •  Ctrl+D → done/finish  •  Ctrl+C → quit  •  ↑/↓ PgUp/PgDn → scroll",
-    )
-    .alignment(Alignment::Center)
-    .style(Style::default().fg(DIM));
-    f.render_widget(help, chunks[3]);
+    let help_text = if waiting || warning.is_some() {
+        "↑/↓ PgUp/PgDn → scroll  •  Ctrl+C → quit"
+    } else {
+        "Enter → send  •  Ctrl+D → done/finish  •  Ctrl+C → quit  •  ↑/↓ PgUp/PgDn → scroll"
+    };
+    f.render_widget(
+        Paragraph::new(help_text)
+            .alignment(Alignment::Center)
+            .style(Style::default().fg(DIM)),
+        chunks[3],
+    );
 }
 
-fn render_chat_msg(msg: &ChatMsg) -> Vec<Line<'static>> {
-    match msg.role {
+// ─── Rendering helpers ────────────────────────────────────────────────────────
+
+fn render_msg(role: &ChatRole, text: &str) -> Vec<Line<'static>> {
+    match role {
         ChatRole::You => {
             let mut lines = vec![Line::from(vec![Span::styled(
                 "▶ You",
                 Style::default().fg(GREEN).add_modifier(Modifier::BOLD),
             )])];
-            for l in msg.text.lines() {
+            for l in text.lines() {
                 lines.push(Line::from(vec![
-                    Span::styled("  ", Style::default()),
+                    Span::raw("  "),
                     Span::styled(l.to_owned(), Style::default().fg(Color::White)),
                 ]));
             }
@@ -435,9 +564,9 @@ fn render_chat_msg(msg: &ChatMsg) -> Vec<Line<'static>> {
                 "◀ Peer",
                 Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
             )])];
-            for l in msg.text.lines() {
+            for l in text.lines() {
                 lines.push(Line::from(vec![
-                    Span::styled("  ", Style::default()),
+                    Span::raw("  "),
                     Span::styled(l.to_owned(), Style::default().fg(Color::White)),
                 ]));
             }
@@ -446,11 +575,11 @@ fn render_chat_msg(msg: &ChatMsg) -> Vec<Line<'static>> {
         }
         ChatRole::System => {
             let mut lines = vec![];
-            for l in msg.text.lines() {
-                lines.push(Line::from(vec![Span::styled(
+            for l in text.lines() {
+                lines.push(Line::from(Span::styled(
                     format!("  ⓘ  {}", l),
                     Style::default().fg(DIM).add_modifier(Modifier::ITALIC),
-                )]));
+                )));
             }
             lines.push(Line::from(""));
             lines

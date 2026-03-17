@@ -1,6 +1,5 @@
 # coding-human
 
-
 A CLI tool for real-time Q&A between a client and a coder over WebSocket.
 
 Coders register themselves in a queue; clients browse the queue and connect to a coder of their choice.

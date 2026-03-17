@@ -6,7 +6,7 @@ use tokio::sync::mpsc;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 
 use crate::protocol::{RegisterRequest, RegisterResponse, WsMessage};
-use crate::tui::{self, ChatEvent, ChatMsg, ChatRole};
+use crate::tui::{self, ChatEvent, ChatMsg};
 
 pub async fn run(label: String) -> Result<()> {
     tui::print_banner(&label);
@@ -37,19 +37,18 @@ pub async fn run(label: String) -> Result<()> {
     let (event_tx, mut event_rx) = mpsc::unbounded_channel::<ChatEvent>();
 
     log_tx
-        .send(ChatMsg {
-            role: ChatRole::System,
-            text: format!(
-                "Registered as \"{}\" (room: {})\nWaiting for a client to connect…",
-                label, room_id
-            ),
-        })
+        .send(ChatMsg::sys(format!(
+            "Registered as \"{}\" (room: {})\nWaiting for a client to connect…",
+            label, room_id
+        )))
         .ok();
+    // Locked while waiting for the client to connect
+    log_tx.send(ChatMsg::SetWaiting(true)).ok();
 
     let label_clone = label.clone();
-    // Async networking task
+
     let net_task: tokio::task::JoinHandle<Result<()>> = tokio::spawn(async move {
-        // Wait for the Matched message
+        // ── Wait for Matched ──────────────────────────────────────────────────
         let client_name = loop {
             match read.next().await {
                 Some(Ok(Message::Text(msg))) => {
@@ -61,10 +60,7 @@ pub async fn run(label: String) -> Result<()> {
                 }
                 Some(Ok(Message::Close(_))) => {
                     log_tx
-                        .send(ChatMsg {
-                            role: ChatRole::System,
-                            text: "Client disconnected before matching.".into(),
-                        })
+                        .send(ChatMsg::sys("Client disconnected before matching."))
                         .ok();
                     return Ok(());
                 }
@@ -75,33 +71,27 @@ pub async fn run(label: String) -> Result<()> {
         };
 
         log_tx
-            .send(ChatMsg {
-                role: ChatRole::System,
-                text: format!("Matched with {}!", client_name),
-            })
+            .send(ChatMsg::sys("Matched with {}!".replace("{}", &client_name)))
             .ok();
 
-        // Main Q&A loop
+        // ── Q&A loop ──────────────────────────────────────────────────────────
         loop {
-            log_tx
-                .send(ChatMsg {
-                    role: ChatRole::System,
-                    text: "Waiting for a question…".into(),
-                })
-                .ok();
+            // Still locked: waiting for the next question from the client
+            log_tx.send(ChatMsg::SetWaiting(true)).ok();
+            log_tx.send(ChatMsg::sys("Waiting for a question…")).ok();
 
+            // Wait for a Question (or File) message
             let question = loop {
                 tokio::select! {
                     ws_msg = read.next() => {
                         match ws_msg {
                             Some(Ok(Message::Text(msg))) => {
-                                // Handle incoming File messages
                                 if let Ok(WsMessage::File { path, content }) =
                                     serde_json::from_str::<WsMessage>(&msg)
                                 {
                                     match safe_tmp_path(&path) {
                                         None => {
-                                            log_tx.send(ChatMsg { role: ChatRole::System, text: format!("Rejected unsafe path: {}", path) }).ok();
+                                            log_tx.send(ChatMsg::sys(format!("Rejected unsafe path: {}", path))).ok();
                                         }
                                         Some(dest) => {
                                             if let Some(parent) = dest.parent() {
@@ -110,10 +100,9 @@ pub async fn run(label: String) -> Result<()> {
                                             tokio::fs::write(&dest, &content).await?;
                                             let orig_snap = orig_snap_path(&path);
                                             let _ = tokio::fs::write(&orig_snap, &content).await;
-                                            log_tx.send(ChatMsg {
-                                                role: ChatRole::System,
-                                                text: format!("Received file: {} → {}", path, dest.display()),
-                                            }).ok();
+                                            log_tx.send(ChatMsg::sys(format!(
+                                                "Received file: {} → {}", path, dest.display()
+                                            ))).ok();
                                         }
                                     }
                                     continue;
@@ -125,7 +114,7 @@ pub async fn run(label: String) -> Result<()> {
                                 }
                             }
                             Some(Ok(Message::Close(_))) => {
-                                log_tx.send(ChatMsg { role: ChatRole::System, text: "Client disconnected.".into() }).ok();
+                                log_tx.send(ChatMsg::sys("Client disconnected.")).ok();
                                 return Ok(());
                             }
                             Some(Err(e)) => return Err(e.into()),
@@ -133,7 +122,7 @@ pub async fn run(label: String) -> Result<()> {
                             _ => {}
                         }
                     }
-                    // Also drain user events while waiting for a question so the TUI stays live
+                    // Keep draining keyboard events so Quit still works while idle
                     ev = event_rx.recv() => {
                         match ev {
                             Some(ChatEvent::Quit) | None => return Ok(()),
@@ -143,124 +132,149 @@ pub async fn run(label: String) -> Result<()> {
                 }
             };
 
+            // Question received — unlock the input so the coder can type an answer
+            log_tx.send(ChatMsg::SetWaiting(false)).ok();
+            log_tx.send(ChatMsg::peer(question)).ok();
             log_tx
-                .send(ChatMsg {
-                    role: ChatRole::Peer,
-                    text: question,
-                })
-                .ok();
-            log_tx
-                .send(ChatMsg {
-                    role: ChatRole::System,
-                    text: format!("Type your answer. Prefix a line with $ to run a command on {:}.\nCtrl+D to finish answering.", client_name),
-                })
+                .send(ChatMsg::sys(format!(
+                    "Type your answer below.\n\
+                 Prefix a line with $ to run a command on {}.\n\
+                 Ctrl+D to finish answering.",
+                    client_name
+                )))
                 .ok();
 
-            // Answer loop — read lines from TUI, forward to client via WS
+            // ── Answer loop ───────────────────────────────────────────────────
             loop {
                 tokio::select! {
-                    // Events from keyboard / TUI
                     ev = event_rx.recv() => {
                         match ev {
                             Some(ChatEvent::Line(line)) => {
                                 let trimmed = line.trim_end_matches('\n').to_string();
+
                                 if let Some(file_path) = trimmed.strip_prefix('@') {
-                                    // Open file in editor
+                                    // Open the received file in $EDITOR via the TUI
                                     let file_path = file_path.trim();
                                     match safe_tmp_path(file_path) {
                                         None => {
-                                            log_tx.send(ChatMsg { role: ChatRole::System, text: format!("Rejected unsafe path: {}", file_path) }).ok();
+                                            log_tx.send(ChatMsg::sys(format!(
+                                                "Rejected unsafe path: {}", file_path
+                                            ))).ok();
                                         }
                                         Some(dest) => {
+                                            // Ensure an .orig snapshot exists before editing
                                             let orig_snap = orig_snap_path(file_path);
                                             if !orig_snap.exists() {
                                                 if let Ok(bytes) = tokio::fs::read(&dest).await {
                                                     let _ = tokio::fs::write(&orig_snap, &bytes).await;
                                                 }
                                             }
-                                            let editor = std::env::var("EDITOR").unwrap_or_else(|_| "nvim".to_string());
-                                            if let Err(e) = tokio::process::Command::new(&editor).arg(&dest).status().await {
-                                                log_tx.send(ChatMsg { role: ChatRole::System, text: format!("Failed to open editor: {}", e) }).ok();
-                                            }
+                                            // Ask the TUI to suspend itself, open the editor,
+                                            // and resume — fixes the broken-layout issue.
+                                            let path_str = dest.to_string_lossy().into_owned();
+                                            log_tx.send(ChatMsg::OpenEditor(path_str)).ok();
+                                            // Wait for the TUI to signal that the editor exited
+                                            wait_for_editor_closed(&mut event_rx).await;
                                         }
                                     }
+
                                 } else if let Some(rest) = trimmed.strip_prefix('$') {
                                     if let Some(diff_path) = rest.strip_prefix("send-diff ") {
-                                        // Generate + send a unified diff
+                                        // Generate and send a unified diff to the client
                                         let diff_path = diff_path.trim();
                                         match safe_tmp_path(diff_path) {
                                             None => {
-                                                log_tx.send(ChatMsg { role: ChatRole::System, text: format!("Rejected unsafe path: {}", diff_path) }).ok();
+                                                log_tx.send(ChatMsg::sys(format!(
+                                                    "Rejected unsafe path: {}", diff_path
+                                                ))).ok();
                                             }
                                             Some(dest) => {
                                                 let orig_snap = orig_snap_path(diff_path);
-                                                if let (Some(orig_str), Some(dest_str)) = (orig_snap.to_str(), dest.to_str()) {
-                                                    match tokio::process::Command::new("diff").args(["-u", orig_str, dest_str]).output().await {
+                                                if let (Some(orig_str), Some(dest_str)) =
+                                                    (orig_snap.to_str(), dest.to_str())
+                                                {
+                                                    match tokio::process::Command::new("diff")
+                                                        .args(["-u", orig_str, dest_str])
+                                                        .output()
+                                                        .await
+                                                    {
                                                         Ok(out) => {
                                                             let diff_text = String::from_utf8_lossy(&out.stdout).to_string();
                                                             if diff_text.is_empty() {
-                                                                log_tx.send(ChatMsg { role: ChatRole::System, text: "No changes detected.".into() }).ok();
-                                                            } else if let Ok(m) = serde_json::to_string(&WsMessage::Diff { path: diff_path.to_string(), diff: diff_text }) {
+                                                                log_tx.send(ChatMsg::sys("No changes detected.")).ok();
+                                                            } else if let Ok(m) = serde_json::to_string(&WsMessage::Diff {
+                                                                path: diff_path.to_string(),
+                                                                diff: diff_text,
+                                                            }) {
                                                                 let _ = write.send(Message::text(m)).await;
-                                                                log_tx.send(ChatMsg { role: ChatRole::System, text: "Diff sent, waiting for client response…".into() }).ok();
+                                                                log_tx.send(ChatMsg::sys("Diff sent, waiting for client response…")).ok();
                                                             }
                                                         }
-                                                        Err(e) => { log_tx.send(ChatMsg { role: ChatRole::System, text: format!("diff error: {}", e) }).ok(); }
+                                                        Err(e) => {
+                                                            log_tx.send(ChatMsg::sys(format!("diff error: {}", e))).ok();
+                                                        }
                                                     }
                                                 }
                                             }
                                         }
                                     } else {
+                                        // $ command — send to client for execution
                                         let command = rest.trim().to_string();
-                                        log_tx.send(ChatMsg { role: ChatRole::You, text: format!("$ {}", command) }).ok();
+                                        log_tx.send(ChatMsg::you(format!("$ {}", command))).ok();
                                         if let Ok(m) = serde_json::to_string(&WsMessage::Cmd { command }) {
                                             let _ = write.send(Message::text(m)).await;
                                         }
                                     }
+
                                 } else {
-                                    log_tx.send(ChatMsg { role: ChatRole::You, text: trimmed.clone() }).ok();
+                                    // Plain text line — send directly as answer chunk
+                                    log_tx.send(ChatMsg::you(trimmed.clone())).ok();
                                     let _ = write.send(Message::text(trimmed)).await;
                                 }
                             }
+
                             Some(ChatEvent::Eof) => {
-                                // Finish the current answer
+                                // Ctrl+D: finish the current answer
                                 if let Ok(m) = serde_json::to_string(&WsMessage::Done) {
                                     let _ = write.send(Message::text(m)).await;
                                 }
-                                log_tx.send(ChatMsg { role: ChatRole::System, text: "─── Answer sent ───".into() }).ok();
-                                break; // back to waiting for next question
+                                log_tx.send(ChatMsg::sys("─── Answer sent ───")).ok();
+                                // Lock input again: need to wait for the next question
+                                log_tx.send(ChatMsg::SetWaiting(true)).ok();
+                                break; // back to waiting for the next question
                             }
+
                             Some(ChatEvent::Quit) | None => return Ok(()),
+
+                            // Sent by the TUI after OpenEditor completes (handled in wait_for_editor_closed)
+                            Some(ChatEvent::EditorClosed) => {}
                         }
                     }
-                    // Incoming WS message while answering (e.g. CmdResult, DiffResponse)
+
+                    // Incoming WS messages while answering (CmdResult, DiffResponse)
                     ws_msg = read.next() => {
                         match ws_msg {
                             Some(Ok(Message::Text(msg))) => {
                                 if let Ok(ws_msg) = serde_json::from_str::<WsMessage>(&msg) {
                                     match ws_msg {
                                         WsMessage::CmdResult { command, output } => {
-                                            log_tx.send(ChatMsg {
-                                                role: ChatRole::System,
-                                                text: format!("[cmd result] $ {}\n{}", command, output),
-                                            }).ok();
+                                            log_tx.send(ChatMsg::sys(format!(
+                                                "[cmd result] $ {}\n{}", command, output
+                                            ))).ok();
                                         }
                                         WsMessage::DiffResponse { accepted } => {
-                                            log_tx.send(ChatMsg {
-                                                role: ChatRole::System,
-                                                text: if accepted {
-                                                    "[diff] Client accepted and applied the changes.".into()
-                                                } else {
-                                                    "[diff] Client rejected the changes.".into()
-                                                },
-                                            }).ok();
+                                            log_tx.send(ChatMsg::sys(if accepted {
+                                                "[diff] Client accepted and applied the changes.".to_string()
+                                            } else {
+                                                "[diff] Client rejected the changes.".to_string()
+                                            })).ok();
                                         }
                                         _ => {}
                                     }
                                 }
                             }
                             Some(Ok(Message::Close(_))) => {
-                                log_tx.send(ChatMsg { role: ChatRole::System, text: "Client disconnected.".into() }).ok();
+                                log_tx.send(ChatMsg::sys("Client disconnected.")).ok();
                                 return Ok(());
                             }
                             Some(Err(e)) => return Err(e.into()),
@@ -273,7 +287,6 @@ pub async fn run(label: String) -> Result<()> {
         }
     });
 
-    // Run the TUI on the current task (blocks until the user quits)
     tui::run_chat(
         format!("Coding Human — {} (coder)", label_clone),
         "Answer".to_string(),
@@ -282,7 +295,7 @@ pub async fn run(label: String) -> Result<()> {
     )
     .await?;
 
-    // Clean up: deregister from queue
+    // Deregister from the queue on exit
     let _ = client
         .delete(format!("{}/queue/{}", server_url, room_id))
         .send()
@@ -290,6 +303,18 @@ pub async fn run(label: String) -> Result<()> {
 
     net_task.abort();
     Ok(())
+}
+
+/// Drain event_rx until ChatEvent::EditorClosed arrives.
+/// This blocks the net task while the TUI is showing the editor.
+async fn wait_for_editor_closed(event_rx: &mut mpsc::UnboundedReceiver<ChatEvent>) {
+    loop {
+        match event_rx.recv().await {
+            Some(ChatEvent::EditorClosed) | None => break,
+            Some(ChatEvent::Quit) => break,
+            _ => {} // ignore Line / Eof while editor is open
+        }
+    }
 }
 
 fn ws_url(server_url: &str, path: &str) -> String {

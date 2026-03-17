@@ -6,7 +6,7 @@ use tokio::sync::mpsc;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 
 use crate::protocol::{QueueResponse, WsMessage};
-use crate::tui::{self, ChatEvent, ChatMsg, ChatRole};
+use crate::tui::{self, ChatEvent, ChatMsg};
 
 pub async fn run(name: String, yes: bool) -> Result<()> {
     tui::print_banner("CODING|HUMAN");
@@ -30,7 +30,7 @@ pub async fn run(name: String, yes: bool) -> Result<()> {
     }
 
     // ── Step 2: TUI coder picker ──────────────────────────────────────────────
-    let entries: Vec<(String, String)> = queue.into_iter().collect(); // (room_id, label)
+    let entries: Vec<(String, String)> = queue.into_iter().collect();
     let labels: Vec<String> = entries.iter().map(|(_, l)| l.clone()).collect();
 
     let selection = tui::pick_from_list("Select a Coder", &labels)?;
@@ -44,7 +44,6 @@ pub async fn run(name: String, yes: bool) -> Result<()> {
     let (ws_stream, _) = connect_async(&ws_url).await?;
     let (mut write, mut read) = ws_stream.split();
 
-    // Notify the coder that a client has matched
     write
         .send(Message::text(serde_json::to_string(&WsMessage::Matched {
             client_name: name.clone(),
@@ -56,46 +55,37 @@ pub async fn run(name: String, yes: bool) -> Result<()> {
     let (event_tx, mut event_rx) = mpsc::unbounded_channel::<ChatEvent>();
 
     log_tx
-        .send(ChatMsg {
-            role: ChatRole::System,
-            text: format!("Connected to coder. Welcome, {}!", name),
-        })
+        .send(ChatMsg::sys(format!(
+            "Connected to coder. Welcome, {}!",
+            name
+        )))
         .ok();
 
     let name_clone = name.clone();
 
-    // Spawn the async networking task
     let net_task = tokio::spawn(async move {
         loop {
             tokio::select! {
-                // Incoming WebSocket message
                 ws_msg = read.next() => {
                     match ws_msg {
                         Some(Ok(Message::Text(msg))) => {
                             if let Ok(ws_msg) = serde_json::from_str::<WsMessage>(&msg) {
                                 match ws_msg {
                                     WsMessage::Done => {
-                                        log_tx.send(ChatMsg {
-                                            role: ChatRole::System,
-                                            text: "─── Answer finished ───".into(),
-                                        }).ok();
+                                        log_tx.send(ChatMsg::sys("─── Answer finished ───")).ok();
+                                        // Unlock the input: client can ask the next question
+                                        log_tx.send(ChatMsg::SetWaiting(false)).ok();
                                     }
 
                                     WsMessage::Cmd { command } => {
-                                        // Show the command and ask y/n — original logic preserved
-                                        log_tx.send(ChatMsg {
-                                            role: ChatRole::System,
-                                            text: format!("Run: {}?", command),
-                                        }).ok();
+                                        log_tx.send(ChatMsg::sys(format!("Run: {}?", command))).ok();
 
                                         let execute = if yes {
                                             true
                                         } else {
-                                            // Prompt the user inside the TUI input box
-                                            log_tx.send(ChatMsg {
-                                                role: ChatRole::System,
-                                                text: "[y/n]: type y or n and press Enter".into(),
-                                            }).ok();
+                                            // Unlock input so the user can type y/n
+                                            log_tx.send(ChatMsg::SetWaiting(false)).ok();
+                                            log_tx.send(ChatMsg::sys("[y/n]: type y or n and press Enter")).ok();
                                             wait_for_yn(&mut event_rx).await
                                         };
 
@@ -122,35 +112,26 @@ pub async fn run(name: String, yes: bool) -> Result<()> {
                                             "(skipped)".to_string()
                                         };
 
-                                        log_tx.send(ChatMsg {
-                                            role: ChatRole::System,
-                                            text: format!("$ {}\n{}", command, output),
-                                        }).ok();
+                                        log_tx.send(ChatMsg::sys(format!("$ {}\n{}", command, output))).ok();
 
                                         if let Ok(result_msg) = serde_json::to_string(&WsMessage::CmdResult { command, output }) {
                                             let _ = write.send(Message::text(result_msg)).await;
                                         }
 
-                                        // Coder will continue streaming the answer — show waiting indicator
-                                        log_tx.send(ChatMsg {
-                                            role: ChatRole::System,
-                                            text: "Waiting for answer…".into(),
-                                        }).ok();
+                                        // Lock input again: coder is continuing the answer
+                                        log_tx.send(ChatMsg::SetWaiting(true)).ok();
+                                        log_tx.send(ChatMsg::sys("Waiting for answer…")).ok();
                                     }
 
                                     WsMessage::Diff { path, diff } => {
-                                        log_tx.send(ChatMsg {
-                                            role: ChatRole::System,
-                                            text: format!("Diff for {}:\n{}", path, diff),
-                                        }).ok();
+                                        log_tx.send(ChatMsg::sys(format!("Diff for {}:\n{}", path, diff))).ok();
 
                                         let apply = if yes {
                                             true
                                         } else {
-                                            log_tx.send(ChatMsg {
-                                                role: ChatRole::System,
-                                                text: "apply? [y/n]: type y or n and press Enter".into(),
-                                            }).ok();
+                                            // Unlock input for y/n
+                                            log_tx.send(ChatMsg::SetWaiting(false)).ok();
+                                            log_tx.send(ChatMsg::sys("apply? [y/n]: type y or n and press Enter")).ok();
                                             wait_for_yn(&mut event_rx).await
                                         };
 
@@ -167,80 +148,60 @@ pub async fn run(name: String, yes: bool) -> Result<()> {
                                                 let _ = tokio::fs::remove_file(&patch_tmp).await;
                                                 match result {
                                                     Ok(out) if out.status.success() => {
-                                                        log_tx.send(ChatMsg {
-                                                            role: ChatRole::System,
-                                                            text: "Patch applied successfully.".into(),
-                                                        }).ok();
+                                                        log_tx.send(ChatMsg::sys("Patch applied successfully.")).ok();
                                                     }
                                                     Ok(out) => {
                                                         let err = String::from_utf8_lossy(&out.stderr).to_string();
-                                                        log_tx.send(ChatMsg {
-                                                            role: ChatRole::System,
-                                                            text: format!("Patch failed: {}", err),
-                                                        }).ok();
+                                                        log_tx.send(ChatMsg::sys(format!("Patch failed: {}", err))).ok();
                                                     }
                                                     Err(e) => {
-                                                        log_tx.send(ChatMsg {
-                                                            role: ChatRole::System,
-                                                            text: format!("Patch error: {}", e),
-                                                        }).ok();
+                                                        log_tx.send(ChatMsg::sys(format!("Patch error: {}", e))).ok();
                                                     }
                                                 }
                                             }
                                         } else {
-                                            log_tx.send(ChatMsg {
-                                                role: ChatRole::System,
-                                                text: "Diff not applied.".into(),
-                                            }).ok();
+                                            log_tx.send(ChatMsg::sys("Diff not applied.")).ok();
                                         }
 
                                         if let Ok(response) = serde_json::to_string(&WsMessage::DiffResponse { accepted: apply }) {
                                             let _ = write.send(Message::text(response)).await;
                                         }
 
-                                        // Coder will continue streaming the answer — show waiting indicator
-                                        log_tx.send(ChatMsg {
-                                            role: ChatRole::System,
-                                            text: "Waiting for answer…".into(),
-                                        }).ok();
+                                        // Lock input again: coder is continuing the answer
+                                        log_tx.send(ChatMsg::SetWaiting(true)).ok();
+                                        log_tx.send(ChatMsg::sys("Waiting for answer…")).ok();
                                     }
 
                                     _ => {
-                                        // Raw text answer chunks
-                                        log_tx.send(ChatMsg { role: ChatRole::Peer, text: msg }).ok();
+                                        // Raw answer text chunk from the coder
+                                        log_tx.send(ChatMsg::peer(msg)).ok();
                                     }
                                 }
                             } else {
-                                // Not a protocol message — raw answer text
-                                log_tx.send(ChatMsg { role: ChatRole::Peer, text: msg }).ok();
+                                log_tx.send(ChatMsg::peer(msg)).ok();
                             }
                         }
                         Some(Ok(Message::Close(_))) | None => {
-                            log_tx.send(ChatMsg {
-                                role: ChatRole::System,
-                                text: "Coder disconnected.".into(),
-                            }).ok();
+                            log_tx.send(ChatMsg::sys("Coder disconnected.")).ok();
+                            log_tx.send(ChatMsg::SetWaiting(false)).ok();
                             break;
                         }
                         Some(Err(e)) => {
-                            log_tx.send(ChatMsg {
-                                role: ChatRole::System,
-                                text: format!("WS error: {}", e),
-                            }).ok();
+                            log_tx.send(ChatMsg::sys(format!("WS error: {}", e))).ok();
+                            log_tx.send(ChatMsg::SetWaiting(false)).ok();
                             break;
                         }
                         _ => {}
                     }
                 }
 
-                // User event from the TUI (questions typed by the client)
                 ev = event_rx.recv() => {
                     match ev {
                         Some(ChatEvent::Line(line)) => {
                             if line == "/quit" {
                                 break;
                             }
-                            // Handle @filepath mentions
+                            // Handle @filepath mentions — read & send files, keep token in question
                             let mut tokens_out: Vec<&str> = Vec::new();
                             for token in line.split_whitespace() {
                                 if let Some(path) = token.strip_prefix('@') {
@@ -255,10 +216,7 @@ pub async fn run(name: String, yes: bool) -> Result<()> {
                                                 }
                                             }
                                             Err(e) => {
-                                                log_tx.send(ChatMsg {
-                                                    role: ChatRole::System,
-                                                    text: format!("Warning: could not read '{}': {}", path, e),
-                                                }).ok();
+                                                log_tx.send(ChatMsg::sys(format!("Warning: could not read '{}': {}", path, e))).ok();
                                             }
                                         }
                                     }
@@ -267,33 +225,29 @@ pub async fn run(name: String, yes: bool) -> Result<()> {
                             }
                             let clean = tokens_out.join(" ");
                             if !clean.is_empty() {
-                                log_tx.send(ChatMsg {
-                                    role: ChatRole::You,
-                                    text: clean.clone(),
-                                }).ok();
+                                log_tx.send(ChatMsg::you(clean.clone())).ok();
                                 if let Ok(q) = serde_json::to_string(&WsMessage::Question {
                                     from: name_clone.clone(),
                                     text: clean,
                                 }) {
                                     let _ = write.send(Message::text(q)).await;
                                 }
-                                // Show waiting indicator while the coder composes an answer
-                                log_tx.send(ChatMsg {
-                                    role: ChatRole::System,
-                                    text: "Waiting for answer…".into(),
-                                }).ok();
+                                // Lock input: waiting for coder's answer
+                                log_tx.send(ChatMsg::SetWaiting(true)).ok();
+                                log_tx.send(ChatMsg::sys("Waiting for answer…")).ok();
                             }
                         }
                         Some(ChatEvent::Eof) | Some(ChatEvent::Quit) | None => {
                             break;
                         }
+                        // Client side never opens an editor, so EditorClosed won't arrive here
+                        Some(ChatEvent::EditorClosed) => {}
                     }
                 }
             }
         }
     });
 
-    // Run the TUI chat on the current thread (blocks until Ctrl+C / Quit)
     tui::run_chat(
         format!("Coding Human — {}", name),
         "Question".to_string(),
@@ -306,22 +260,18 @@ pub async fn run(name: String, yes: bool) -> Result<()> {
     Ok(())
 }
 
-/// Wait for the user to type "y" or "n" in the TUI input, ignoring other lines.
-/// Returns `true` for "y", `false` for "n" or if the channel closes.
+/// Wait for the user to type "y" or "n" in the TUI input (ignores all other input).
+/// Returns true for "y", false for "n" / Eof / Quit / channel close.
 async fn wait_for_yn(event_rx: &mut mpsc::UnboundedReceiver<ChatEvent>) -> bool {
     loop {
         match event_rx.recv().await {
-            Some(ChatEvent::Line(line)) => {
-                let answer = line.trim().to_ascii_lowercase();
-                if answer == "y" {
-                    return true;
-                } else if answer == "n" {
-                    return false;
-                }
-                // Any other input: ignore and keep waiting
-            }
-            // Ctrl+D or Ctrl+C: treat as "no"
+            Some(ChatEvent::Line(line)) => match line.trim().to_ascii_lowercase().as_str() {
+                "y" => return true,
+                "n" => return false,
+                _ => {} // keep waiting
+            },
             Some(ChatEvent::Eof) | Some(ChatEvent::Quit) | None => return false,
+            Some(ChatEvent::EditorClosed) => {} // shouldn't happen on client side
         }
     }
 }
