@@ -1,4 +1,22 @@
+use std::collections::HashMap;
+
 use serde::{Deserialize, Serialize};
+
+/// POST /queue request body — sent by the programmer when registering.
+#[derive(Serialize, Deserialize, Debug)]
+pub struct RegisterRequest {
+    pub label: String,
+}
+
+/// POST /queue response body — returned by the worker after registering.
+#[derive(Serialize, Deserialize, Debug)]
+pub struct RegisterResponse {
+    #[serde(rename = "roomId")]
+    pub room_id: String,
+}
+
+/// GET /queue response body — map of room_id → label for all waiting programmers.
+pub type QueueResponse = HashMap<String, String>;
 
 /// Messages exchanged over the WebSocket connection.
 /// The worker relays these as opaque text; both sides parse them with this type.
@@ -13,4 +31,6 @@ pub enum WsMessage {
     File { path: String, content: String },
     /// Programmer → Client: unified diff of an edited file
     Diff { path: String, diff: String },
+    /// Programmer → Client: signals end of the current answer stream
+    Done,
 }

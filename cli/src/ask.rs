@@ -6,7 +6,7 @@ use reqwest::Client;
 use std::io::{self, Write};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 
-use crate::protocol::WsMessage;
+use crate::protocol::{QueueResponse, WsMessage};
 
 pub async fn run(yes: bool) -> Result<()> {
     dotenvy::dotenv().ok();
@@ -16,7 +16,7 @@ pub async fn run(yes: bool) -> Result<()> {
     let client = Client::new();
 
     // Step 1: Fetch the queue of waiting programmers
-    let queue: std::collections::HashMap<String, String> = client
+    let queue: QueueResponse = client
         .get(format!("{}/queue", server_url))
         .send()
         .await?
@@ -109,13 +109,13 @@ pub async fn run(yes: bool) -> Result<()> {
                         spinner.finish_and_clear();
                         first_chunk = false;
                     }
-                    if msg == "[DONE]" {
-                        println!();
-                        break;
-                    }
                     // Check if this is a typed protocol message
                     if let Ok(ws_msg) = serde_json::from_str::<WsMessage>(&msg) {
                         match ws_msg {
+                            WsMessage::Done => {
+                                println!();
+                                break;
+                            }
                             WsMessage::Cmd { command } => {
                                 println!("\nRun: {}?", command);
 
@@ -185,11 +185,7 @@ pub async fn run(yes: bool) -> Result<()> {
                                     ));
                                     tokio::fs::write(&patch_tmp, &diff).await?;
                                     let result = tokio::process::Command::new("patch")
-                                        .args([
-                                            "-i",
-                                            patch_tmp.to_str().unwrap_or(""),
-                                            &path,
-                                        ])
+                                        .args(["-i", patch_tmp.to_str().unwrap_or(""), &path])
                                         .output()
                                         .await?;
                                     let _ = tokio::fs::remove_file(&patch_tmp).await;

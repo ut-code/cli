@@ -214,6 +214,16 @@ async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
             let room_id = path
                 .trim_start_matches("/rooms/")
                 .trim_end_matches("/client");
+
+            // Remove the programmer from the queue now that a client is matched.
+            // Ignore errors — the entry may already be gone.
+            let _ = queue_stub()?
+                .fetch_with_request(Request::new_with_init(
+                    &format!("http://do/queue/{}", room_id),
+                    RequestInit::new().with_method(Method::Delete),
+                )?)
+                .await;
+
             let ns = env.durable_object("ROOM")?;
             ns.id_from_string(room_id)?
                 .get_stub()?

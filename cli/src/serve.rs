@@ -5,7 +5,7 @@ use reqwest::Client;
 use tokio::io::AsyncBufReadExt;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 
-use crate::protocol::WsMessage;
+use crate::protocol::{RegisterRequest, RegisterResponse, WsMessage};
 
 pub async fn run(label: String) -> Result<()> {
     dotenvy::dotenv().ok();
@@ -17,25 +17,35 @@ pub async fn run(label: String) -> Result<()> {
     // Step 1: Register in the queue and get a room ID
     let res = client
         .post(format!("{}/queue", server_url))
-        .json(&serde_json::json!({ "label": label }))
+        .json(&RegisterRequest {
+            label: label.clone(),
+        })
         .send()
         .await?;
-    let data: serde_json::Value = res.json().await?;
-    let room_id = data["roomId"]
-        .as_str()
-        .ok_or_else(|| anyhow::anyhow!("Failed to get roomId"))?;
+    let data: RegisterResponse = res.json().await?;
+    let room_id = &data.room_id;
 
     println!("Registered as \"{}\" (room: {})", label, room_id);
     println!("Waiting for a client to connect...");
 
-    // Step 2: Connect to the room via WebSocket as programmer
-    let ws_url = ws_url(&server_url, &format!("/rooms/{}/programmer", room_id));
+    // Step 2: Run the session; always deregister from the queue when done.
+    let result = session(&server_url, room_id).await;
+    let _ = client
+        .delete(format!("{}/queue/{}", server_url, room_id))
+        .send()
+        .await;
+    result
+}
+
+async fn session(server_url: &str, room_id: &str) -> Result<()> {
+    // Connect to the room via WebSocket as programmer
+    let ws_url = ws_url(server_url, &format!("/rooms/{}/programmer", room_id));
     let (ws_stream, _) = connect_async(&ws_url).await?;
     let (mut write, mut read) = ws_stream.split();
 
     let mut async_stdin = tokio::io::BufReader::new(tokio::io::stdin());
 
-    // Step 3: Q&A loop — wait for questions, type answers
+    // Q&A loop — wait for questions, type answers
     loop {
         println!("\nWaiting for a question...");
         let question = loop {
@@ -62,8 +72,7 @@ pub async fn run(label: String) -> Result<()> {
                         println!("Received file: {} -> {}", path, dest.display());
 
                         // Open the file in $EDITOR so the programmer can edit it
-                        let editor =
-                            std::env::var("EDITOR").unwrap_or_else(|_| "nvim".to_string());
+                        let editor = std::env::var("EDITOR").unwrap_or_else(|_| "nvim".to_string());
                         match tokio::process::Command::new(&editor)
                             .arg(&dest)
                             .status()
@@ -72,10 +81,8 @@ pub async fn run(label: String) -> Result<()> {
                             Err(e) => eprintln!("Failed to open editor '{}': {}", editor, e),
                             Ok(_) => {
                                 // Generate a unified diff between original and edited content
-                                let orig_tmp = base.join(format!(
-                                    ".orig.{}",
-                                    path.replace('/', "_")
-                                ));
+                                let orig_tmp =
+                                    base.join(format!(".orig.{}", path.replace('/', "_")));
                                 if tokio::fs::write(&orig_tmp, &content).await.is_ok() {
                                     if let (Some(orig_str), Some(dest_str)) =
                                         (orig_tmp.to_str(), dest.to_str())
@@ -86,8 +93,8 @@ pub async fn run(label: String) -> Result<()> {
                                             .await;
                                         let _ = tokio::fs::remove_file(&orig_tmp).await;
                                         if let Ok(out) = diff_out {
-                                            let diff_text = String::from_utf8_lossy(&out.stdout)
-                                                .to_string();
+                                            let diff_text =
+                                                String::from_utf8_lossy(&out.stdout).to_string();
                                             if !diff_text.is_empty() {
                                                 match serde_json::to_string(&WsMessage::Diff {
                                                     path: path.clone(),
@@ -98,16 +105,12 @@ pub async fn run(label: String) -> Result<()> {
                                                             .send(Message::text(diff_msg))
                                                             .await
                                                         {
-                                                            eprintln!(
-                                                                "Failed to send diff: {}",
-                                                                e
-                                                            );
+                                                            eprintln!("Failed to send diff: {}", e);
                                                         }
                                                     }
-                                                    Err(e) => eprintln!(
-                                                        "Failed to serialize diff: {}",
-                                                        e
-                                                    ),
+                                                    Err(e) => {
+                                                        eprintln!("Failed to serialize diff: {}", e)
+                                                    }
                                                 }
                                             }
                                         }
@@ -121,11 +124,6 @@ pub async fn run(label: String) -> Result<()> {
                 }
                 Some(Ok(Message::Close(_))) => {
                     println!("Client disconnected.");
-                    // Remove from queue on clean disconnect
-                    let _ = client
-                        .delete(format!("{}/queue/{}", server_url, room_id))
-                        .send()
-                        .await;
                     return Ok(());
                 }
                 Some(Err(e)) => return Err(e.into()),
@@ -142,7 +140,7 @@ pub async fn run(label: String) -> Result<()> {
             tokio::select! {
                 n = async_stdin.read_line(&mut line) => {
                     if n? == 0 {
-                        write.send(Message::Text("[DONE]".to_string())).await?;
+                        write.send(Message::text(serde_json::to_string(&WsMessage::Done)?)).await?;
                         println!();
                         break;
                     }
@@ -166,10 +164,6 @@ pub async fn run(label: String) -> Result<()> {
                         }
                         Some(Ok(Message::Close(_))) => {
                             println!("Client disconnected.");
-                            let _ = client
-                                .delete(format!("{}/queue/{}", server_url, room_id))
-                                .send()
-                                .await;
                             return Ok(());
                         }
                         Some(Err(e)) => return Err(e.into()),
