@@ -7,8 +7,10 @@ use std::io::{self, Write};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 
 use crate::protocol::{QueueResponse, WsMessage};
+use crate::tui;
 
 pub async fn run(name: String, yes: bool) -> Result<()> {
+    tui::print_banner("CODING|HUMAN");
     dotenvy::dotenv().ok();
     let server_url =
         std::env::var("SERVER_URL").unwrap_or_else(|_| "http://localhost:8787".to_string());
@@ -220,9 +222,10 @@ pub async fn run(name: String, yes: bool) -> Result<()> {
                                 }
 
                                 // Notify the coder whether the diff was accepted
-                                let response_msg = serde_json::to_string(
-                                    &WsMessage::DiffResponse { accepted: apply },
-                                )?;
+                                let response_msg =
+                                    serde_json::to_string(&WsMessage::DiffResponse {
+                                        accepted: apply,
+                                    })?;
                                 write.send(Message::text(response_msg)).await?;
 
                                 // Reset spinner to wait for the rest of the answer

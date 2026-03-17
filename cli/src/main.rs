@@ -1,6 +1,7 @@
 mod client;
 mod coder;
 mod protocol;
+mod tui;
 
 use clap::{Parser, Subcommand};
 

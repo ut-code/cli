@@ -6,8 +6,10 @@ use tokio::io::AsyncBufReadExt;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 
 use crate::protocol::{RegisterRequest, RegisterResponse, WsMessage};
+use crate::tui;
 
 pub async fn run(label: String) -> Result<()> {
+    tui::print_banner(&label);
     dotenvy::dotenv().ok();
     let server_url =
         std::env::var("SERVER_URL").unwrap_or_else(|_| "http://localhost:8787".to_string());
