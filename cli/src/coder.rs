@@ -161,9 +161,9 @@ async fn session(server_url: &str, room_id: &str) -> Result<()> {
                             }
                         }
                     } else if let Some(rest) = trimmed.strip_prefix('$') {
-                        // $diff<space>path — local diff (no space between $ and diff)
-                        // $ cmd      — shell command sent to the client (space after $)
-                        if let Some(diff_path) = rest.strip_prefix("diff ") {
+                        // $send-diff<space>path — send diff to client (no space between $ and send-diff)
+                        // $ cmd              — shell command sent to the client (space after $)
+                        if let Some(diff_path) = rest.strip_prefix("send-diff ") {
                             // Generate a unified diff and send it to the client
                             let diff_path = diff_path.trim();
                             match safe_tmp_path(diff_path) {
