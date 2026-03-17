@@ -1,9 +1,9 @@
 # coding-human
 
 
-A CLI tool for real-time Q&A between a client and a programmer over WebSocket.
+A CLI tool for real-time Q&A between a client and a coder over WebSocket.
 
-Programmers register themselves in a queue; clients browse the queue and connect to a programmer of their choice.
+Coders register themselves in a queue; clients browse the queue and connect to a coder of their choice.
 
 ## Repository layout
 
@@ -14,8 +14,8 @@ coding-human/
 │   ├── Cargo.toml
 │   └── src/
 │       ├── main.rs
-│       ├── ask.rs   # client: browse queue, pick a programmer, ask questions
-│       └── serve.rs # programmer: join queue, answer questions
+│       ├── client.rs  # client: browse queue, pick a coder, ask questions
+│       └── coder.rs   # coder: join queue, answer questions
 └── worker/         # Cloudflare Worker (workers-rs / WASM)
     ├── Cargo.toml
     ├── wrangler.jsonc
@@ -31,10 +31,10 @@ cargo install --git https://github.com/ut-code/cli --bin coding-human
 
 ## Usage
 
-### Programmer: join the queue
+### Coder: join the queue
 
 ```sh
-coding-human serve <LABEL>
+coding-human coder <LABEL>
 ```
 
 Registers you in the queue with the given display name, creates a room, and
@@ -43,16 +43,16 @@ and you type answers line by line. Press `Ctrl+D` to finish a response and
 wait for the next question.
 
 ```sh
-coding-human serve "Alice (Rust / systems)"
+coding-human coder "Alice (Rust / systems)"
 ```
 
 ### Client: ask a question
 
 ```sh
-coding-human ask
+coding-human client <NAME>
 ```
 
-Fetches the list of available programmers, lets you pick one, then opens a
+Fetches the list of available coders, lets you pick one, then opens a
 session. Type questions at the prompt; answers stream back in real time.
 Type `/quit` or press `Ctrl+D` to exit.
 
@@ -79,11 +79,11 @@ npx wrangler dev
 Then run the CLI against it (default URL is already `http://localhost:8787`):
 
 ```sh
-# terminal 1 — programmer
-coding-human serve "Alice"
+# terminal 1 — coder
+coding-human coder "Alice"
 
 # terminal 2 — client
-coding-human ask
+coding-human client "Bob"
 ```
 
 ## Deploy (Worker)
@@ -104,13 +104,13 @@ The worker exposes:
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `GET` | `/queue` | List waiting programmers `{ roomId: label }` |
-| `POST` | `/queue` | Register a programmer `{ label }` → `{ roomId }` |
-| `DELETE` | `/queue/:roomId` | Deregister a programmer |
-| `GET` (WS) | `/rooms/:id/programmer` | WebSocket for the programmer |
+| `GET` | `/queue` | List waiting coders `{ roomId: label }` |
+| `POST` | `/queue` | Register a coder `{ label }` → `{ roomId }` |
+| `DELETE` | `/queue/:roomId` | Deregister a coder |
+| `GET` (WS) | `/rooms/:id/coder` | WebSocket for the coder |
 | `GET` (WS) | `/rooms/:id/client` | WebSocket for the client |
 
 Two Durable Objects back the worker:
 
-- **`QueueDO`** — singleton, persists the queue of waiting programmers in KV storage
-- **`RoomSession`** — one per room, relays messages between programmer and client using hibernatable WebSockets
+- **`QueueDO`** — singleton, persists the queue of waiting coders in KV storage
+- **`RoomSession`** — one per room, relays messages between coder and client using hibernatable WebSockets

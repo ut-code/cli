@@ -2,7 +2,7 @@ use serde::Deserialize;
 use worker::*;
 
 // ---- QueueDO ----------------------------------------------------------------
-// Singleton Durable Object that tracks waiting programmers.
+// Singleton Durable Object that tracks waiting coders.
 // Persistent storage: Map<room_id, label> via DO key-value storage.
 
 #[durable_object]
@@ -63,7 +63,7 @@ struct RegisterBody {
 }
 
 // ---- RoomSession ------------------------------------------------------------
-// Per-room Durable Object that relays messages between programmer and client.
+// Per-room Durable Object that relays messages between coder and client.
 
 #[durable_object]
 pub struct RoomSession {
@@ -80,8 +80,8 @@ impl DurableObject for RoomSession {
     async fn fetch(&self, req: Request) -> Result<Response> {
         let url = req.url()?;
         let path = url.path();
-        let role = if path.ends_with("/programmer") {
-            "programmer"
+        let role = if path.ends_with("/coder") {
+            "coder"
         } else {
             "client"
         };
@@ -103,7 +103,7 @@ impl DurableObject for RoomSession {
 
         let tags = self.state.get_tags(&ws);
         if tags.iter().any(|t| t == "client") {
-            for p in self.state.get_websockets_with_tag("programmer") {
+            for p in self.state.get_websockets_with_tag("coder") {
                 p.send_with_str(&text)?;
             }
         } else {
@@ -123,7 +123,7 @@ impl DurableObject for RoomSession {
     ) -> Result<()> {
         let tags = self.state.get_tags(&ws);
         if tags.iter().any(|t| t == "client") {
-            for p in self.state.get_websockets_with_tag("programmer") {
+            for p in self.state.get_websockets_with_tag("coder") {
                 let _ = p.close::<&str>(None, None);
             }
         } else {
@@ -158,7 +158,7 @@ async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
         // GET /queue
         (Method::Get, "/queue") => queue_stub()?.fetch_with_str("http://do/queue").await,
 
-        // POST /queue — create room, register programmer
+        // POST /queue — create room, register coder
         (Method::Post, "/queue") => {
             let mut req = req;
             let body: QueueRegisterRequest = req.json().await?;
@@ -197,11 +197,11 @@ async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
                 .await
         }
 
-        // WS /rooms/:id/programmer
-        (Method::Get, path) if path.starts_with("/rooms/") && path.ends_with("/programmer") => {
+        // WS /rooms/:id/coder
+        (Method::Get, path) if path.starts_with("/rooms/") && path.ends_with("/coder") => {
             let room_id = path
                 .trim_start_matches("/rooms/")
-                .trim_end_matches("/programmer");
+                .trim_end_matches("/coder");
             let ns = env.durable_object("ROOM")?;
             ns.id_from_string(room_id)?
                 .get_stub()?

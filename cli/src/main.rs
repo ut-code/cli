@@ -1,6 +1,6 @@
-mod ask;
+mod client;
+mod coder;
 mod protocol;
-mod serve;
 
 use clap::{Parser, Subcommand};
 
@@ -14,16 +14,16 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Ask a question to an available programmer
-    Ask {
-        /// Your display name shown to the programmer
+    /// Connect to an available coder and ask questions
+    Client {
+        /// Your display name shown to the coder
         name: String,
-        /// Automatically execute commands sent by the programmer without prompting
+        /// Automatically execute commands sent by the coder without prompting
         #[arg(long)]
         yes: bool,
     },
-    /// Register as a programmer and wait for questions
-    Serve {
+    /// Register as a coder and wait for questions
+    Coder {
         /// Your display name shown to clients
         label: String,
     },
@@ -34,14 +34,14 @@ async fn main() {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Ask { name, yes } => {
-            if let Err(e) = ask::run(name, yes).await {
+        Commands::Client { name, yes } => {
+            if let Err(e) = client::run(name, yes).await {
                 eprintln!("Error: {}", e);
                 std::process::exit(1);
             }
         }
-        Commands::Serve { label } => {
-            if let Err(e) = serve::run(label).await {
+        Commands::Coder { label } => {
+            if let Err(e) = coder::run(label).await {
                 eprintln!("Error: {}", e);
                 std::process::exit(1);
             }

@@ -15,7 +15,7 @@ pub async fn run(name: String, yes: bool) -> Result<()> {
 
     let client = Client::new();
 
-    // Step 1: Fetch the queue of waiting programmers
+    // Step 1: Fetch the queue of waiting coders
     let queue: QueueResponse = client
         .get(format!("{}/queue", server_url))
         .send()
@@ -24,19 +24,19 @@ pub async fn run(name: String, yes: bool) -> Result<()> {
         .await?;
 
     if queue.is_empty() {
-        println!("No programmers are currently available. Try again later.");
+        println!("No coders are currently available. Try again later.");
         return Ok(());
     }
 
     // Step 2: Display the list and let the client choose
     let entries: Vec<(&String, &String)> = queue.iter().collect();
-    println!("Available programmers:");
+    println!("Available coders:");
     for (i, (_, label)) in entries.iter().enumerate() {
         println!("  [{}] {}", i + 1, label);
     }
 
     let room_id = loop {
-        print!("Select a programmer (1-{}): ", entries.len());
+        print!("Select a coder (1-{}): ", entries.len());
         io::stdout().flush()?;
         let mut input = String::new();
         if io::stdin().read_line(&mut input)? == 0 {
@@ -53,7 +53,7 @@ pub async fn run(name: String, yes: bool) -> Result<()> {
     let (ws_stream, _) = connect_async(&ws_url).await?;
     let (mut write, mut read) = ws_stream.split();
 
-    // Notify the programmer that a client has matched
+    // Notify the coder that a client has matched
     write
         .send(Message::text(serde_json::to_string(&WsMessage::Matched {
             client_name: name.clone(),
@@ -232,7 +232,7 @@ pub async fn run(name: String, yes: bool) -> Result<()> {
                 }
                 Some(Ok(Message::Close(_))) | Some(Err(_)) | None => {
                     spinner.finish_and_clear();
-                    println!("\nProgrammer disconnected.");
+                    println!("\nCoder disconnected.");
                     return Ok(());
                 }
                 _ => {}

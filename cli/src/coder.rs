@@ -38,8 +38,8 @@ pub async fn run(label: String) -> Result<()> {
 }
 
 async fn session(server_url: &str, room_id: &str) -> Result<()> {
-    // Connect to the room via WebSocket as programmer
-    let ws_url = ws_url(server_url, &format!("/rooms/{}/programmer", room_id));
+    // Connect to the room via WebSocket as coder
+    let ws_url = ws_url(server_url, &format!("/rooms/{}/coder", room_id));
     let (ws_stream, _) = connect_async(&ws_url).await?;
     let (mut write, mut read) = ws_stream.split();
 
@@ -92,7 +92,7 @@ async fn session(server_url: &str, room_id: &str) -> Result<()> {
                         tokio::fs::write(&dest, &content).await?;
                         println!("Received file: {} -> {}", path, dest.display());
 
-                        // Open the file in $EDITOR so the programmer can edit it
+                        // Open the file in $EDITOR so the coder can edit it
                         let editor = std::env::var("EDITOR").unwrap_or_else(|_| "nvim".to_string());
                         match tokio::process::Command::new(&editor)
                             .arg(&dest)
