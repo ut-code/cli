@@ -35,6 +35,8 @@ pub enum WsMessage {
     File { path: String, content: String },
     /// Coder → Client: unified diff of an edited file
     Diff { path: String, diff: String },
+    /// Client → Coder: whether the client accepted and applied a diff
+    DiffResponse { accepted: bool },
     /// Coder → Client: signals end of the current answer stream
     Done,
 }

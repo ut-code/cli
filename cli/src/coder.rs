@@ -75,68 +75,19 @@ async fn session(server_url: &str, room_id: &str) -> Result<()> {
                     if let Ok(WsMessage::File { path, content }) =
                         serde_json::from_str::<WsMessage>(&msg)
                     {
-                        let base = std::path::Path::new("/tmp/coding-human");
-                        let dest = base.join(&path);
-                        // Reject paths that escape the base directory
-                        if !dest.starts_with(base)
-                            || std::path::Path::new(&path)
-                                .components()
-                                .any(|c| c == std::path::Component::ParentDir)
-                        {
-                            eprintln!("Rejected unsafe file path: {}", path);
-                            continue;
-                        }
-                        if let Some(parent) = dest.parent() {
-                            tokio::fs::create_dir_all(parent).await?;
-                        }
-                        tokio::fs::write(&dest, &content).await?;
-                        println!("Received file: {} -> {}", path, dest.display());
-
-                        // Open the file in $EDITOR so the coder can edit it
-                        let editor = std::env::var("EDITOR").unwrap_or_else(|_| "nvim".to_string());
-                        match tokio::process::Command::new(&editor)
-                            .arg(&dest)
-                            .status()
-                            .await
-                        {
-                            Err(e) => eprintln!("Failed to open editor '{}': {}", editor, e),
-                            Ok(_) => {
-                                // Generate a unified diff between original and edited content
-                                let orig_tmp =
-                                    base.join(format!(".orig.{}", path.replace('/', "_")));
-                                if tokio::fs::write(&orig_tmp, &content).await.is_ok() {
-                                    if let (Some(orig_str), Some(dest_str)) =
-                                        (orig_tmp.to_str(), dest.to_str())
-                                    {
-                                        let diff_out = tokio::process::Command::new("diff")
-                                            .args(["-u", orig_str, dest_str])
-                                            .output()
-                                            .await;
-                                        let _ = tokio::fs::remove_file(&orig_tmp).await;
-                                        if let Ok(out) = diff_out {
-                                            let diff_text =
-                                                String::from_utf8_lossy(&out.stdout).to_string();
-                                            if !diff_text.is_empty() {
-                                                match serde_json::to_string(&WsMessage::Diff {
-                                                    path: path.clone(),
-                                                    diff: diff_text,
-                                                }) {
-                                                    Ok(diff_msg) => {
-                                                        if let Err(e) = write
-                                                            .send(Message::text(diff_msg))
-                                                            .await
-                                                        {
-                                                            eprintln!("Failed to send diff: {}", e);
-                                                        }
-                                                    }
-                                                    Err(e) => {
-                                                        eprintln!("Failed to serialize diff: {}", e)
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
+                        match safe_tmp_path(&path) {
+                            None => eprintln!("Rejected unsafe file path: {}", path),
+                            Some(dest) => {
+                                if let Some(parent) = dest.parent() {
+                                    tokio::fs::create_dir_all(parent).await?;
                                 }
+                                tokio::fs::write(&dest, &content).await?;
+                                // Save an original snapshot for later diff generation
+                                let orig_snap = orig_snap_path(&path);
+                                if let Err(e) = tokio::fs::write(&orig_snap, &content).await {
+                                    eprintln!("Warning: could not save original snapshot: {}", e);
+                                }
+                                println!("Received file: {} -> {}", path, dest.display());
                             }
                         }
                         continue;
@@ -171,10 +122,81 @@ async fn session(server_url: &str, room_id: &str) -> Result<()> {
                         break;
                     }
                     let trimmed = line.trim_end_matches('\n');
-                    if let Some(cmd) = trimmed.strip_prefix('$') {
-                        let command = cmd.trim().to_string();
-                        let msg = serde_json::to_string(&WsMessage::Cmd { command })?;
-                        write.send(Message::text(msg)).await?;
+                    if let Some(file_path) = trimmed.strip_prefix('@') {
+                        // Open the file from /tmp/coding-human/ in $EDITOR
+                        let file_path = file_path.trim();
+                        match safe_tmp_path(file_path) {
+                            None => eprintln!("Rejected unsafe file path: {}", file_path),
+                            Some(dest) => {
+                                let editor =
+                                    std::env::var("EDITOR").unwrap_or_else(|_| "nvim".to_string());
+                                if let Err(e) = tokio::process::Command::new(&editor)
+                                    .arg(&dest)
+                                    .status()
+                                    .await
+                                {
+                                    eprintln!("Failed to open editor '{}': {}", editor, e);
+                                }
+                            }
+                        }
+                    } else if let Some(rest) = trimmed.strip_prefix('$') {
+                        let rest = rest.trim();
+                        if let Some(diff_path) = rest.strip_prefix("diff ") {
+                            // Generate a unified diff and send it to the client
+                            let diff_path = diff_path.trim();
+                            match safe_tmp_path(diff_path) {
+                                None => eprintln!("Rejected unsafe file path: {}", diff_path),
+                                Some(dest) => {
+                                    let orig_snap = orig_snap_path(diff_path);
+                                    if let (Some(orig_str), Some(dest_str)) =
+                                        (orig_snap.to_str(), dest.to_str())
+                                    {
+                                        let diff_out = tokio::process::Command::new("diff")
+                                            .args(["-u", orig_str, dest_str])
+                                            .output()
+                                            .await;
+                                        match diff_out {
+                                            Ok(out) => {
+                                                let diff_text =
+                                                    String::from_utf8_lossy(&out.stdout)
+                                                        .to_string();
+                                                if diff_text.is_empty() {
+                                                    println!("No changes detected.");
+                                                } else {
+                                                    match serde_json::to_string(&WsMessage::Diff {
+                                                        path: diff_path.to_string(),
+                                                        diff: diff_text,
+                                                    }) {
+                                                        Ok(diff_msg) => {
+                                                            if let Err(e) = write
+                                                                .send(Message::text(diff_msg))
+                                                                .await
+                                                            {
+                                                                eprintln!(
+                                                                    "Failed to send diff: {}",
+                                                                    e
+                                                                );
+                                                            } else {
+                                                                println!("Diff sent, waiting for client response...");
+                                                            }
+                                                        }
+                                                        Err(e) => eprintln!(
+                                                            "Failed to serialize diff: {}",
+                                                            e
+                                                        ),
+                                                    }
+                                                }
+                                            }
+                                            Err(e) => eprintln!("Failed to run diff: {}", e),
+                                        }
+                                    }
+                                }
+                            }
+                        } else {
+                            let command = rest.to_string();
+                            let msg = serde_json::to_string(&WsMessage::Cmd { command })?;
+                            write.send(Message::text(msg)).await?;
+                        }
                     } else {
                         write.send(Message::text(trimmed)).await?;
                     }
@@ -182,10 +204,20 @@ async fn session(server_url: &str, room_id: &str) -> Result<()> {
                 ws_msg = read.next() => {
                     match ws_msg {
                         Some(Ok(Message::Text(msg))) => {
-                            if let Ok(WsMessage::CmdResult { command, output }) =
-                                serde_json::from_str::<WsMessage>(&msg)
-                            {
-                                println!("\n[cmd result] $ {}\n{}", command, output);
+                            if let Ok(ws_msg) = serde_json::from_str::<WsMessage>(&msg) {
+                                match ws_msg {
+                                    WsMessage::CmdResult { command, output } => {
+                                        println!("\n[cmd result] $ {}\n{}", command, output);
+                                    }
+                                    WsMessage::DiffResponse { accepted } => {
+                                        if accepted {
+                                            println!("\n[diff] Client accepted and applied the changes.");
+                                        } else {
+                                            println!("\n[diff] Client rejected the changes.");
+                                        }
+                                    }
+                                    _ => {}
+                                }
                             }
                         }
                         Some(Ok(Message::Close(_))) => {
@@ -213,4 +245,26 @@ fn ws_url(server_url: &str, path: &str) -> String {
         .or_else(|| server_url.strip_prefix("http://"))
         .unwrap_or(server_url);
     format!("{}://{}{}", scheme, host, path)
+}
+
+/// Returns the validated destination path inside `/tmp/coding-human/`, or
+/// `None` if the path would escape the base directory.
+fn safe_tmp_path(relative_path: &str) -> Option<std::path::PathBuf> {
+    let base = std::path::Path::new("/tmp/coding-human");
+    let dest = base.join(relative_path);
+    if dest.starts_with(base)
+        && !std::path::Path::new(relative_path)
+            .components()
+            .any(|c| c == std::path::Component::ParentDir)
+    {
+        Some(dest)
+    } else {
+        None
+    }
+}
+
+/// Returns the path of the `.orig.` snapshot for the given relative file path.
+fn orig_snap_path(relative_path: &str) -> std::path::PathBuf {
+    std::path::Path::new("/tmp/coding-human")
+        .join(format!(".orig.{}", relative_path.replace('/', "_")))
 }
