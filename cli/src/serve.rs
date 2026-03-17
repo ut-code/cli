@@ -45,6 +45,27 @@ async fn session(server_url: &str, room_id: &str) -> Result<()> {
 
     let mut async_stdin = tokio::io::BufReader::new(tokio::io::stdin());
 
+    // Wait for the Matched message to know who connected
+    let client_name = loop {
+        match read.next().await {
+            Some(Ok(Message::Text(msg))) => {
+                if let Ok(WsMessage::Matched { client_name }) =
+                    serde_json::from_str::<WsMessage>(&msg)
+                {
+                    break client_name;
+                }
+            }
+            Some(Ok(Message::Close(_))) => {
+                println!("Client disconnected before sending match.");
+                return Ok(());
+            }
+            Some(Err(e)) => return Err(e.into()),
+            None => return Err(anyhow::anyhow!("Connection lost")),
+            _ => {}
+        }
+    };
+    println!("Matched with {}", client_name);
+
     // Q&A loop — wait for questions, type answers
     loop {
         println!("\nWaiting for a question...");
@@ -120,7 +141,12 @@ async fn session(server_url: &str, room_id: &str) -> Result<()> {
                         }
                         continue;
                     }
-                    break msg;
+                    if let Ok(WsMessage::Question { from: _, text }) =
+                        serde_json::from_str::<WsMessage>(&msg)
+                    {
+                        break text;
+                    }
+                    // Ignore unrecognised messages while waiting for a question
                 }
                 Some(Ok(Message::Close(_))) => {
                     println!("Client disconnected.");

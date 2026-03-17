@@ -8,7 +8,7 @@ use tokio_tungstenite::{connect_async, tungstenite::Message};
 
 use crate::protocol::{QueueResponse, WsMessage};
 
-pub async fn run(yes: bool) -> Result<()> {
+pub async fn run(name: String, yes: bool) -> Result<()> {
     dotenvy::dotenv().ok();
     let server_url =
         std::env::var("SERVER_URL").unwrap_or_else(|_| "http://localhost:8787".to_string());
@@ -53,6 +53,13 @@ pub async fn run(yes: bool) -> Result<()> {
     let (ws_stream, _) = connect_async(&ws_url).await?;
     let (mut write, mut read) = ws_stream.split();
 
+    // Notify the programmer that a client has matched
+    write
+        .send(Message::text(serde_json::to_string(&WsMessage::Matched {
+            client_name: name.clone(),
+        })?))
+        .await?;
+
     println!("Connected. Type your questions below (Ctrl+D or /quit to exit).\n");
 
     // Step 4: Q&A loop
@@ -96,7 +103,14 @@ pub async fn run(yes: bool) -> Result<()> {
             continue;
         }
 
-        write.send(Message::text(cleaned_question)).await?;
+        write
+            .send(Message::text(serde_json::to_string(
+                &WsMessage::Question {
+                    from: name.clone(),
+                    text: cleaned_question,
+                },
+            )?))
+            .await?;
 
         let spinner = ProgressBar::new_spinner();
         spinner.set_message("Waiting for answer");

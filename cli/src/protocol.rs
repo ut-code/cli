@@ -23,6 +23,10 @@ pub type QueueResponse = HashMap<String, String>;
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum WsMessage {
+    /// Client → Programmer: sent immediately on connect to identify the client
+    Matched { client_name: String },
+    /// Client → Programmer: a question with the client's display name
+    Question { from: String, text: String },
     /// Programmer → Client: run a shell command
     Cmd { command: String },
     /// Client → Programmer: result of a shell command
