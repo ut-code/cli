@@ -2,11 +2,11 @@ use anyhow::Result;
 use futures::sink::SinkExt;
 use futures::stream::StreamExt;
 use reqwest::Client;
-use tokio::io::AsyncBufReadExt;
+use tokio::sync::mpsc;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 
 use crate::protocol::{RegisterRequest, RegisterResponse, WsMessage};
-use crate::tui;
+use crate::tui::{self, ChatEvent, ChatMsg, ChatRole};
 
 pub async fn run(label: String) -> Result<()> {
     tui::print_banner(&label);
@@ -16,7 +16,7 @@ pub async fn run(label: String) -> Result<()> {
 
     let client = Client::new();
 
-    // Step 1: Register in the queue and get a room ID
+    // ── Step 1: Register in the queue ─────────────────────────────────────────
     let res = client
         .post(format!("{}/queue", server_url))
         .json(&RegisterRequest {
@@ -25,84 +25,47 @@ pub async fn run(label: String) -> Result<()> {
         .send()
         .await?;
     let data: RegisterResponse = res.json().await?;
-    let room_id = &data.room_id;
+    let room_id = data.room_id.clone();
 
-    println!("Registered as \"{}\" (room: {})", label, room_id);
-    println!("Waiting for a client to connect...");
-
-    // Step 2: Run the session; always deregister from the queue when done.
-    let result = session(&server_url, room_id).await;
-    let _ = client
-        .delete(format!("{}/queue/{}", server_url, room_id))
-        .send()
-        .await;
-    result
-}
-
-async fn session(server_url: &str, room_id: &str) -> Result<()> {
-    // Connect to the room via WebSocket as coder
-    let ws_url = ws_url(server_url, &format!("/rooms/{}/coder", room_id));
+    // ── Step 2: Connect via WebSocket ─────────────────────────────────────────
+    let ws_url = ws_url(&server_url, &format!("/rooms/{}/coder", room_id));
     let (ws_stream, _) = connect_async(&ws_url).await?;
     let (mut write, mut read) = ws_stream.split();
 
-    let mut async_stdin = tokio::io::BufReader::new(tokio::io::stdin());
+    // ── Step 3: Chat TUI ──────────────────────────────────────────────────────
+    let (log_tx, log_rx) = mpsc::unbounded_channel::<ChatMsg>();
+    let (event_tx, mut event_rx) = mpsc::unbounded_channel::<ChatEvent>();
 
-    // Wait for the Matched message to know who connected
-    let client_name = loop {
-        match read.next().await {
-            Some(Ok(Message::Text(msg))) => {
-                if let Ok(WsMessage::Matched { client_name }) =
-                    serde_json::from_str::<WsMessage>(&msg)
-                {
-                    break client_name;
-                }
-            }
-            Some(Ok(Message::Close(_))) => {
-                println!("Client disconnected before sending match.");
-                return Ok(());
-            }
-            Some(Err(e)) => return Err(e.into()),
-            None => return Err(anyhow::anyhow!("Connection lost")),
-            _ => {}
-        }
-    };
-    println!("Matched with {}", client_name);
+    log_tx
+        .send(ChatMsg {
+            role: ChatRole::System,
+            text: format!(
+                "Registered as \"{}\" (room: {})\nWaiting for a client to connect…",
+                label, room_id
+            ),
+        })
+        .ok();
 
-    // Q&A loop — wait for questions, type answers
-    loop {
-        println!("\nWaiting for a question...");
-        let question = loop {
+    let label_clone = label.clone();
+    // Async networking task
+    let net_task: tokio::task::JoinHandle<Result<()>> = tokio::spawn(async move {
+        // Wait for the Matched message
+        let client_name = loop {
             match read.next().await {
                 Some(Ok(Message::Text(msg))) => {
-                    if let Ok(WsMessage::File { path, content }) =
+                    if let Ok(WsMessage::Matched { client_name }) =
                         serde_json::from_str::<WsMessage>(&msg)
                     {
-                        match safe_tmp_path(&path) {
-                            None => eprintln!("Rejected unsafe file path: {}", path),
-                            Some(dest) => {
-                                if let Some(parent) = dest.parent() {
-                                    tokio::fs::create_dir_all(parent).await?;
-                                }
-                                tokio::fs::write(&dest, &content).await?;
-                                // Save an original snapshot for later diff generation
-                                let orig_snap = orig_snap_path(&path);
-                                if let Err(e) = tokio::fs::write(&orig_snap, &content).await {
-                                    eprintln!("Warning: could not save original snapshot: {}", e);
-                                }
-                                println!("Received file: {} -> {}", path, dest.display());
-                            }
-                        }
-                        continue;
+                        break client_name;
                     }
-                    if let Ok(WsMessage::Question { from: _, text }) =
-                        serde_json::from_str::<WsMessage>(&msg)
-                    {
-                        break text;
-                    }
-                    // Ignore unrecognised messages while waiting for a question
                 }
                 Some(Ok(Message::Close(_))) => {
-                    println!("Client disconnected.");
+                    log_tx
+                        .send(ChatMsg {
+                            role: ChatRole::System,
+                            text: "Client disconnected before matching.".into(),
+                        })
+                        .ok();
                     return Ok(());
                 }
                 Some(Err(e)) => return Err(e.into()),
@@ -111,151 +74,222 @@ async fn session(server_url: &str, room_id: &str) -> Result<()> {
             }
         };
 
-        println!("\nQuestion: {}\n", question);
-        println!("Answer (Ctrl+D to finish, prefix a line with $ to run a command on client):\n");
+        log_tx
+            .send(ChatMsg {
+                role: ChatRole::System,
+                text: format!("Matched with {}!", client_name),
+            })
+            .ok();
 
+        // Main Q&A loop
         loop {
-            let mut line = String::new();
-            tokio::select! {
-                n = async_stdin.read_line(&mut line) => {
-                    if n? == 0 {
-                        write.send(Message::text(serde_json::to_string(&WsMessage::Done)?)).await?;
-                        println!();
-                        break;
-                    }
-                    let trimmed = line.trim_end_matches('\n');
-                    if let Some(file_path) = trimmed.strip_prefix('@') {
-                        // Open the file from /tmp/coding-human/ in $EDITOR
-                        let file_path = file_path.trim();
-                        match safe_tmp_path(file_path) {
-                            None => eprintln!("Rejected unsafe file path: {}", file_path),
-                            Some(dest) => {
-                                // Ensure an .orig. snapshot exists before editing
-                                let orig_snap = orig_snap_path(file_path);
-                                if !orig_snap.exists() {
-                                    match tokio::fs::read(&dest).await {
-                                        Ok(bytes) => {
-                                            if let Err(e) =
-                                                tokio::fs::write(&orig_snap, &bytes).await
-                                            {
-                                                eprintln!(
-                                                    "Warning: could not save original snapshot: {}",
-                                                    e
-                                                );
-                                            }
-                                        }
-                                        Err(e) => eprintln!(
-                                            "Warning: could not read '{}' for snapshot: {}",
-                                            dest.display(),
-                                            e
-                                        ),
-                                    }
-                                }
-                                let editor =
-                                    std::env::var("EDITOR").unwrap_or_else(|_| "nvim".to_string());
-                                if let Err(e) = tokio::process::Command::new(&editor)
-                                    .arg(&dest)
-                                    .status()
-                                    .await
+            log_tx
+                .send(ChatMsg {
+                    role: ChatRole::System,
+                    text: "Waiting for a question…".into(),
+                })
+                .ok();
+
+            let question = loop {
+                tokio::select! {
+                    ws_msg = read.next() => {
+                        match ws_msg {
+                            Some(Ok(Message::Text(msg))) => {
+                                // Handle incoming File messages
+                                if let Ok(WsMessage::File { path, content }) =
+                                    serde_json::from_str::<WsMessage>(&msg)
                                 {
-                                    eprintln!("Failed to open editor '{}': {}", editor, e);
+                                    match safe_tmp_path(&path) {
+                                        None => {
+                                            log_tx.send(ChatMsg { role: ChatRole::System, text: format!("Rejected unsafe path: {}", path) }).ok();
+                                        }
+                                        Some(dest) => {
+                                            if let Some(parent) = dest.parent() {
+                                                tokio::fs::create_dir_all(parent).await?;
+                                            }
+                                            tokio::fs::write(&dest, &content).await?;
+                                            let orig_snap = orig_snap_path(&path);
+                                            let _ = tokio::fs::write(&orig_snap, &content).await;
+                                            log_tx.send(ChatMsg {
+                                                role: ChatRole::System,
+                                                text: format!("Received file: {} → {}", path, dest.display()),
+                                            }).ok();
+                                        }
+                                    }
+                                    continue;
+                                }
+                                if let Ok(WsMessage::Question { from: _, text }) =
+                                    serde_json::from_str::<WsMessage>(&msg)
+                                {
+                                    break text;
                                 }
                             }
+                            Some(Ok(Message::Close(_))) => {
+                                log_tx.send(ChatMsg { role: ChatRole::System, text: "Client disconnected.".into() }).ok();
+                                return Ok(());
+                            }
+                            Some(Err(e)) => return Err(e.into()),
+                            None => return Err(anyhow::anyhow!("Connection lost")),
+                            _ => {}
                         }
-                    } else if let Some(rest) = trimmed.strip_prefix('$') {
-                        // $send-diff<space>path — send diff to client (no space between $ and send-diff)
-                        // $ cmd              — shell command sent to the client (space after $)
-                        if let Some(diff_path) = rest.strip_prefix("send-diff ") {
-                            // Generate a unified diff and send it to the client
-                            let diff_path = diff_path.trim();
-                            match safe_tmp_path(diff_path) {
-                                None => eprintln!("Rejected unsafe file path: {}", diff_path),
-                                Some(dest) => {
-                                    let orig_snap = orig_snap_path(diff_path);
-                                    if let (Some(orig_str), Some(dest_str)) =
-                                        (orig_snap.to_str(), dest.to_str())
-                                    {
-                                        let diff_out = tokio::process::Command::new("diff")
-                                            .args(["-u", orig_str, dest_str])
-                                            .output()
-                                            .await;
-                                        match diff_out {
-                                            Ok(out) => {
-                                                let diff_text =
-                                                    String::from_utf8_lossy(&out.stdout)
-                                                        .to_string();
-                                                if diff_text.is_empty() {
-                                                    println!("No changes detected.");
-                                                } else {
-                                                    match serde_json::to_string(&WsMessage::Diff {
-                                                        path: diff_path.to_string(),
-                                                        diff: diff_text,
-                                                    }) {
-                                                        Ok(diff_msg) => {
-                                                            if let Err(e) = write
-                                                                .send(Message::text(diff_msg))
-                                                                .await
-                                                            {
-                                                                eprintln!(
-                                                                    "Failed to send diff: {}",
-                                                                    e
-                                                                );
-                                                            } else {
-                                                                println!("Diff sent, waiting for client response...");
+                    }
+                    // Also drain user events while waiting for a question so the TUI stays live
+                    ev = event_rx.recv() => {
+                        match ev {
+                            Some(ChatEvent::Quit) | None => return Ok(()),
+                            _ => {}
+                        }
+                    }
+                }
+            };
+
+            log_tx
+                .send(ChatMsg {
+                    role: ChatRole::Peer,
+                    text: question,
+                })
+                .ok();
+            log_tx
+                .send(ChatMsg {
+                    role: ChatRole::System,
+                    text: format!("Type your answer. Prefix a line with $ to run a command on {:}.\nCtrl+D to finish answering.", client_name),
+                })
+                .ok();
+
+            // Answer loop — read lines from TUI, forward to client via WS
+            loop {
+                tokio::select! {
+                    // Events from keyboard / TUI
+                    ev = event_rx.recv() => {
+                        match ev {
+                            Some(ChatEvent::Line(line)) => {
+                                let trimmed = line.trim_end_matches('\n').to_string();
+                                if let Some(file_path) = trimmed.strip_prefix('@') {
+                                    // Open file in editor
+                                    let file_path = file_path.trim();
+                                    match safe_tmp_path(file_path) {
+                                        None => {
+                                            log_tx.send(ChatMsg { role: ChatRole::System, text: format!("Rejected unsafe path: {}", file_path) }).ok();
+                                        }
+                                        Some(dest) => {
+                                            let orig_snap = orig_snap_path(file_path);
+                                            if !orig_snap.exists() {
+                                                if let Ok(bytes) = tokio::fs::read(&dest).await {
+                                                    let _ = tokio::fs::write(&orig_snap, &bytes).await;
+                                                }
+                                            }
+                                            let editor = std::env::var("EDITOR").unwrap_or_else(|_| "nvim".to_string());
+                                            if let Err(e) = tokio::process::Command::new(&editor).arg(&dest).status().await {
+                                                log_tx.send(ChatMsg { role: ChatRole::System, text: format!("Failed to open editor: {}", e) }).ok();
+                                            }
+                                        }
+                                    }
+                                } else if let Some(rest) = trimmed.strip_prefix('$') {
+                                    if let Some(diff_path) = rest.strip_prefix("send-diff ") {
+                                        // Generate + send a unified diff
+                                        let diff_path = diff_path.trim();
+                                        match safe_tmp_path(diff_path) {
+                                            None => {
+                                                log_tx.send(ChatMsg { role: ChatRole::System, text: format!("Rejected unsafe path: {}", diff_path) }).ok();
+                                            }
+                                            Some(dest) => {
+                                                let orig_snap = orig_snap_path(diff_path);
+                                                if let (Some(orig_str), Some(dest_str)) = (orig_snap.to_str(), dest.to_str()) {
+                                                    match tokio::process::Command::new("diff").args(["-u", orig_str, dest_str]).output().await {
+                                                        Ok(out) => {
+                                                            let diff_text = String::from_utf8_lossy(&out.stdout).to_string();
+                                                            if diff_text.is_empty() {
+                                                                log_tx.send(ChatMsg { role: ChatRole::System, text: "No changes detected.".into() }).ok();
+                                                            } else if let Ok(m) = serde_json::to_string(&WsMessage::Diff { path: diff_path.to_string(), diff: diff_text }) {
+                                                                let _ = write.send(Message::text(m)).await;
+                                                                log_tx.send(ChatMsg { role: ChatRole::System, text: "Diff sent, waiting for client response…".into() }).ok();
                                                             }
                                                         }
-                                                        Err(e) => eprintln!(
-                                                            "Failed to serialize diff: {}",
-                                                            e
-                                                        ),
+                                                        Err(e) => { log_tx.send(ChatMsg { role: ChatRole::System, text: format!("diff error: {}", e) }).ok(); }
                                                     }
                                                 }
                                             }
-                                            Err(e) => eprintln!("Failed to run diff: {}", e),
+                                        }
+                                    } else {
+                                        let command = rest.trim().to_string();
+                                        log_tx.send(ChatMsg { role: ChatRole::You, text: format!("$ {}", command) }).ok();
+                                        if let Ok(m) = serde_json::to_string(&WsMessage::Cmd { command }) {
+                                            let _ = write.send(Message::text(m)).await;
                                         }
                                     }
+                                } else {
+                                    log_tx.send(ChatMsg { role: ChatRole::You, text: trimmed.clone() }).ok();
+                                    let _ = write.send(Message::text(trimmed)).await;
                                 }
                             }
-                        } else {
-                            let command = rest.trim().to_string();
-                            let msg = serde_json::to_string(&WsMessage::Cmd { command })?;
-                            write.send(Message::text(msg)).await?;
+                            Some(ChatEvent::Eof) => {
+                                // Finish the current answer
+                                if let Ok(m) = serde_json::to_string(&WsMessage::Done) {
+                                    let _ = write.send(Message::text(m)).await;
+                                }
+                                log_tx.send(ChatMsg { role: ChatRole::System, text: "─── Answer sent ───".into() }).ok();
+                                break; // back to waiting for next question
+                            }
+                            Some(ChatEvent::Quit) | None => return Ok(()),
                         }
-                    } else {
-                        write.send(Message::text(trimmed)).await?;
                     }
-                }
-                ws_msg = read.next() => {
-                    match ws_msg {
-                        Some(Ok(Message::Text(msg))) => {
-                            if let Ok(ws_msg) = serde_json::from_str::<WsMessage>(&msg) {
-                                match ws_msg {
-                                    WsMessage::CmdResult { command, output } => {
-                                        println!("\n[cmd result] $ {}\n{}", command, output);
-                                    }
-                                    WsMessage::DiffResponse { accepted } => {
-                                        if accepted {
-                                            println!("\n[diff] Client accepted and applied the changes.");
-                                        } else {
-                                            println!("\n[diff] Client rejected the changes.");
+                    // Incoming WS message while answering (e.g. CmdResult, DiffResponse)
+                    ws_msg = read.next() => {
+                        match ws_msg {
+                            Some(Ok(Message::Text(msg))) => {
+                                if let Ok(ws_msg) = serde_json::from_str::<WsMessage>(&msg) {
+                                    match ws_msg {
+                                        WsMessage::CmdResult { command, output } => {
+                                            log_tx.send(ChatMsg {
+                                                role: ChatRole::System,
+                                                text: format!("[cmd result] $ {}\n{}", command, output),
+                                            }).ok();
                                         }
+                                        WsMessage::DiffResponse { accepted } => {
+                                            log_tx.send(ChatMsg {
+                                                role: ChatRole::System,
+                                                text: if accepted {
+                                                    "[diff] Client accepted and applied the changes.".into()
+                                                } else {
+                                                    "[diff] Client rejected the changes.".into()
+                                                },
+                                            }).ok();
+                                        }
+                                        _ => {}
                                     }
-                                    _ => {}
                                 }
                             }
+                            Some(Ok(Message::Close(_))) => {
+                                log_tx.send(ChatMsg { role: ChatRole::System, text: "Client disconnected.".into() }).ok();
+                                return Ok(());
+                            }
+                            Some(Err(e)) => return Err(e.into()),
+                            None => return Err(anyhow::anyhow!("Connection lost")),
+                            _ => {}
                         }
-                        Some(Ok(Message::Close(_))) => {
-                            println!("Client disconnected.");
-                            return Ok(());
-                        }
-                        Some(Err(e)) => return Err(e.into()),
-                        None => return Err(anyhow::anyhow!("Connection lost")),
-                        _ => {}
                     }
                 }
             }
         }
-    }
+    });
+
+    // Run the TUI on the current task (blocks until the user quits)
+    tui::run_chat(
+        format!("Coding Human — {} (coder)", label_clone),
+        "Answer".to_string(),
+        log_rx,
+        event_tx,
+    )
+    .await?;
+
+    // Clean up: deregister from queue
+    let _ = client
+        .delete(format!("{}/queue/{}", server_url, room_id))
+        .send()
+        .await;
+
+    net_task.abort();
+    Ok(())
 }
 
 fn ws_url(server_url: &str, path: &str) -> String {
@@ -271,8 +305,6 @@ fn ws_url(server_url: &str, path: &str) -> String {
     format!("{}://{}{}", scheme, host, path)
 }
 
-/// Returns the validated destination path inside `/tmp/coding-human/`, or
-/// `None` if the path would escape the base directory.
 fn safe_tmp_path(relative_path: &str) -> Option<std::path::PathBuf> {
     let base = std::path::Path::new("/tmp/coding-human");
     let dest = base.join(relative_path);
@@ -287,7 +319,6 @@ fn safe_tmp_path(relative_path: &str) -> Option<std::path::PathBuf> {
     }
 }
 
-/// Returns the path of the `.orig.` snapshot for the given relative file path.
 fn orig_snap_path(relative_path: &str) -> std::path::PathBuf {
     std::path::Path::new("/tmp/coding-human")
         .join(format!(".orig.{}", relative_path.replace('/', "_")))
