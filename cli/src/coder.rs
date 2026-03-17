@@ -128,6 +128,27 @@ async fn session(server_url: &str, room_id: &str) -> Result<()> {
                         match safe_tmp_path(file_path) {
                             None => eprintln!("Rejected unsafe file path: {}", file_path),
                             Some(dest) => {
+                                // Ensure an .orig. snapshot exists before editing
+                                let orig_snap = orig_snap_path(file_path);
+                                if !orig_snap.exists() {
+                                    match tokio::fs::read(&dest).await {
+                                        Ok(bytes) => {
+                                            if let Err(e) =
+                                                tokio::fs::write(&orig_snap, &bytes).await
+                                            {
+                                                eprintln!(
+                                                    "Warning: could not save original snapshot: {}",
+                                                    e
+                                                );
+                                            }
+                                        }
+                                        Err(e) => eprintln!(
+                                            "Warning: could not read '{}' for snapshot: {}",
+                                            dest.display(),
+                                            e
+                                        ),
+                                    }
+                                }
                                 let editor =
                                     std::env::var("EDITOR").unwrap_or_else(|_| "nvim".to_string());
                                 if let Err(e) = tokio::process::Command::new(&editor)
@@ -140,7 +161,8 @@ async fn session(server_url: &str, room_id: &str) -> Result<()> {
                             }
                         }
                     } else if let Some(rest) = trimmed.strip_prefix('$') {
-                        let rest = rest.trim();
+                        // $diff<space>path — local diff (no space between $ and diff)
+                        // $ cmd      — shell command sent to the client (space after $)
                         if let Some(diff_path) = rest.strip_prefix("diff ") {
                             // Generate a unified diff and send it to the client
                             let diff_path = diff_path.trim();
@@ -193,7 +215,7 @@ async fn session(server_url: &str, room_id: &str) -> Result<()> {
                                 }
                             }
                         } else {
-                            let command = rest.to_string();
+                            let command = rest.trim().to_string();
                             let msg = serde_json::to_string(&WsMessage::Cmd { command })?;
                             write.send(Message::text(msg)).await?;
                         }
