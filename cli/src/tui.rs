@@ -167,16 +167,8 @@ async fn get_path_completions(dir: &str, prefix: &str) -> Vec<String> {
                 continue;
             }
             if name.starts_with(prefix) {
-                let is_dir = entry
-                    .file_type()
-                    .await
-                    .map(|t| t.is_dir())
-                    .unwrap_or(false);
-                let display = if is_dir {
-                    format!("{}/", name)
-                } else {
-                    name
-                };
+                let is_dir = entry.file_type().await.map(|t| t.is_dir()).unwrap_or(false);
+                let display = if is_dir { format!("{}/", name) } else { name };
                 entries.push(display);
             }
         }
@@ -425,15 +417,11 @@ pub async fn run_chat(
                         } else if let Some(at_pos) = input.rfind('@') {
                             let partial_path = input[at_pos + 1..].to_string();
                             let prefix_part = input[..=at_pos].to_string();
-                            let (dir_to_read, dir_display, file_prefix) =
-                                split_path(&partial_path);
+                            let (dir_to_read, dir_display, file_prefix) = split_path(&partial_path);
                             let completions =
                                 get_path_completions(&dir_to_read, &file_prefix).await;
                             if !completions.is_empty() {
-                                input = format!(
-                                    "{}{}{}",
-                                    prefix_part, dir_display, completions[0]
-                                );
+                                input = format!("{}{}{}", prefix_part, dir_display, completions[0]);
                                 tab_state = Some(TabState {
                                     prefix: prefix_part,
                                     dir_display,
