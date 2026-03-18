@@ -114,6 +114,77 @@ pub enum ChatEvent {
     EditorClosed,
 }
 
+// ─── Tab-completion state ──────────────────────────────────────────────────────
+
+/// Tracks an in-progress @path tab-completion cycle.
+struct TabState {
+    /// Everything in the input up to and including the `@` character.
+    prefix: String,
+    /// The directory component of the path being completed (e.g. `"src/"`).
+    dir_display: String,
+    /// Sorted list of candidate filenames (directories have a trailing `/`).
+    completions: Vec<String>,
+    /// Index of the currently shown completion.
+    index: usize,
+}
+
+/// Split a partial path (the text after `@`) into the directory to read, the
+/// display prefix for that directory, and the filename prefix to filter by.
+///
+/// Examples:
+///   `"src/ma"` → (`"src"`, `"src/"`, `"ma"`)
+///   `"ma"`     → (`"."`,   `""`,    `"ma"`)
+///   `"/usr/lo"` → (`"/usr"`, `"/usr/"`, `"lo"`)
+///   `"/lo"`    → (`"/"`,   `"/"`,   `"lo"`)
+fn split_path(partial: &str) -> (String, String, String) {
+    if let Some(slash_pos) = partial.rfind('/') {
+        let dir_str = &partial[..slash_pos]; // e.g. "src" or "" for root
+        let dir_display = format!("{}/", dir_str); // e.g. "src/" or "/"
+        let dir_to_read = if slash_pos == 0 {
+            "/".to_string()
+        } else {
+            dir_str.to_string()
+        };
+        let file_prefix = partial[slash_pos + 1..].to_string();
+        (dir_to_read, dir_display, file_prefix)
+    } else {
+        (".".to_string(), String::new(), partial.to_string())
+    }
+}
+
+/// Return a sorted list of filesystem entries inside `dir` whose names start
+/// with `prefix`.  Directories are returned with a trailing `/`.
+///
+/// Hidden entries (names starting with `.`) are only included when `prefix`
+/// itself starts with `.`, matching typical shell completion behaviour.
+async fn get_path_completions(dir: &str, prefix: &str) -> Vec<String> {
+    let mut entries = Vec::new();
+    if let Ok(mut rd) = tokio::fs::read_dir(dir).await {
+        while let Ok(Some(entry)) = rd.next_entry().await {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            // Skip hidden files unless the user explicitly typed a leading dot.
+            if name.starts_with('.') && !prefix.starts_with('.') {
+                continue;
+            }
+            if name.starts_with(prefix) {
+                let is_dir = entry
+                    .file_type()
+                    .await
+                    .map(|t| t.is_dir())
+                    .unwrap_or(false);
+                let display = if is_dir {
+                    format!("{}/", name)
+                } else {
+                    name
+                };
+                entries.push(display);
+            }
+        }
+    }
+    entries.sort();
+    entries
+}
+
 // ─── Coder picker ─────────────────────────────────────────────────────────────
 
 pub fn pick_from_list(title: &str, entries: &[String]) -> Result<Option<usize>> {
@@ -230,6 +301,9 @@ pub async fn run_chat(
     let mut log: Vec<(ChatRole, String)> = Vec::new();
     let mut input = String::new();
 
+    // Tab-completion state ──────────────────────────────────────────────────────
+    let mut tab_state: Option<TabState> = None;
+
     // Scroll state ──────────────────────────────────────────────────────────────
     // `scroll_offset` is always in rendered-line units (not message-entry units).
     // `at_bottom = true` means we track the tail automatically; in that mode
@@ -335,12 +409,47 @@ pub async fn run_chat(
                         let _ = event_tx.send(ChatEvent::Eof);
                         input.clear();
                     }
+                    // ── Tab: @path completion ──────────────────────────────────
+                    (KeyCode::Tab, _) if waiting => {
+                        warn_until = Some(now + Duration::from_secs(2));
+                    }
+                    (KeyCode::Tab, _) => {
+                        if let Some(state) = tab_state.as_mut() {
+                            // `state.completions` is guaranteed non-empty: TabState is only
+                            // created when the completions vec has at least one element.
+                            state.index = (state.index + 1) % state.completions.len();
+                            input = format!(
+                                "{}{}{}",
+                                state.prefix, state.dir_display, state.completions[state.index]
+                            );
+                        } else if let Some(at_pos) = input.rfind('@') {
+                            let partial_path = input[at_pos + 1..].to_string();
+                            let prefix_part = input[..=at_pos].to_string();
+                            let (dir_to_read, dir_display, file_prefix) =
+                                split_path(&partial_path);
+                            let completions =
+                                get_path_completions(&dir_to_read, &file_prefix).await;
+                            if !completions.is_empty() {
+                                input = format!(
+                                    "{}{}{}",
+                                    prefix_part, dir_display, completions[0]
+                                );
+                                tab_state = Some(TabState {
+                                    prefix: prefix_part,
+                                    dir_display,
+                                    completions,
+                                    index: 0,
+                                });
+                            }
+                        }
+                    }
                     // ── Blocked input: show 2-second warning ────────────────────
                     (KeyCode::Enter | KeyCode::Char(_) | KeyCode::Backspace, _) if waiting => {
                         warn_until = Some(now + Duration::from_secs(2));
                     }
                     // ── Normal typing ──────────────────────────────────────────
                     (KeyCode::Enter, _) => {
+                        tab_state = None;
                         let line = input.trim().to_string();
                         input.clear();
                         if !line.is_empty() {
@@ -348,9 +457,11 @@ pub async fn run_chat(
                         }
                     }
                     (KeyCode::Char(c), _) => {
+                        tab_state = None;
                         input.push(c);
                     }
                     (KeyCode::Backspace, _) => {
+                        tab_state = None;
                         input.pop();
                     }
                     // ── Scrolling ──────────────────────────────────────────────
@@ -531,7 +642,7 @@ fn draw_chat(
     let help_text = if waiting || warning.is_some() {
         "↑/↓ PgUp/PgDn → scroll  •  Ctrl+C → quit"
     } else {
-        "Enter → send  •  Ctrl+D → done/finish  •  Ctrl+C → quit  •  ↑/↓ PgUp/PgDn → scroll"
+        "Enter → send  •  @path Tab → complete  •  Ctrl+D → done/finish  •  Ctrl+C → quit  •  ↑/↓ PgUp/PgDn → scroll"
     };
     f.render_widget(
         Paragraph::new(help_text)
